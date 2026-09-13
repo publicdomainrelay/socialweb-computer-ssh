@@ -21,9 +21,16 @@ interface ChannelLike {
 
 type AcceptFn = (() => unknown) | undefined;
 
+function parseableHostKey(pem: string): boolean {
+  if (!pem.includes("PRIVATE KEY")) return false;
+  const parsed = utils.parseKey(pem);
+  return !(parsed instanceof Error);
+}
+
 async function loadOrCreateHostKey(path: string, log: SshServerOptions["log"]): Promise<string> {
   const existing = await Deno.readTextFile(path).catch(() => "");
-  if (existing.includes("PRIVATE KEY")) return existing;
+  if (parseableHostKey(existing)) return existing;
+  if (existing) log("host_key_unreadable_regenerating", { path, bytes: existing.length });
   const generated = utils.generateKeyPairSync("ed25519").private;
   const dir = path.split("/").slice(0, -1).join("/");
   if (dir) await Deno.mkdir(dir, { recursive: true });
