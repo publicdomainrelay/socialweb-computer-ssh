@@ -124,6 +124,21 @@ Server-side `--requester-arg` (repeatable, `flag=value`) passes through to
 `request-vm-ssh` — for example `--requester-arg --relay-port=5555` against a
 relay you run yourself.
 
+Every `LC_` variable — recognized or not — is also exported into the command's
+environment inside the guest, which is how `echo $LC_MY_VAR` works:
+
+```sh
+LC_MY_VAR="secret_value" ssh alice.test@host "echo \$LC_MY_VAR"   # -> secret_value
+LC_POLICY=only-me ssh alice.test@host "hostname"
+```
+
+Non-`LC_` variables are not forwarded.
+
+A `shell` request with no command runs `--default-command` (default `bash`)
+without a TTY, and `pty-req` is refused. The guest command runs with piped
+stdio, so there is no terminal to allocate; OpenSSH reports the refusal and
+continues in cooked mode rather than pretending otherwise.
+
 ## Trust boundaries
 
 Both halves of this service are reachable by anyone on the network, so:
@@ -146,21 +161,6 @@ Both halves of this service are reachable by anyone on the network, so:
 - **`GET /oauth/login` has no CSRF cookie.** It starts whatever flow it is
   asked for; the victim ends up signed in as whoever started it. Same shape as
   the reference implementation.
-
-Every `LC_` variable — recognized or not — is also exported into the command's
-environment inside the guest, which is how `echo $LC_MY_VAR` works:
-
-```sh
-LC_MY_VAR="secret_value" ssh alice.test@host "echo \$LC_MY_VAR"   # -> secret_value
-LC_POLICY=only-me ssh alice.test@host "hostname"
-```
-
-Non-`LC_` variables are not forwarded.
-
-A `shell` request with no command runs `--default-command` (default `bash`)
-without a TTY, and `pty-req` is refused. The guest command runs with piped
-stdio, so there is no terminal to allocate; OpenSSH reports the refusal and
-continues in cooked mode rather than pretending otherwise.
 
 ## Layout
 
