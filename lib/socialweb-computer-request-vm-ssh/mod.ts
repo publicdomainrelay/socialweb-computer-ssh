@@ -27,7 +27,7 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Compu
       env: Record<string, string>,
       io: CommandIo,
     ): Promise<void> {
-      const { policy, args } = policyFromEnv(env);
+      const { policy, args: policyArgs } = policyFromEnv(env);
       const execCommand = renderExecCommand(command, env);
       const extraArgs = requesterArgsFromEnv(env).concat(opts.extraArgs ?? []);
 
@@ -37,12 +37,12 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Compu
           if (!name.startsWith("LC_")) childEnv[name] = value;
         }
 
-        const args2 = buildRequesterArgs({
+        const args = buildRequesterArgs({
           requesterPath: opts.requesterPath,
           sessionPath,
           accountDid: account.did,
           policy,
-          policyArgs: args,
+          policyArgs,
           execCommand,
           vmReadyTimeoutSec: opts.vmReadyTimeoutSec,
           extraArgs,
@@ -50,7 +50,7 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Compu
 
         log("requester_spawn", { did: account.did, policy, command });
         const child = new Deno.Command(denoExecutable, {
-          args: args2,
+          args,
           env: childEnv,
           clearEnv: true,
           stdin: "piped",

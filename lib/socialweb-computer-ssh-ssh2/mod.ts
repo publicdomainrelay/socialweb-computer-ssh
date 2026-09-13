@@ -107,6 +107,7 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
     command: string,
     env: Record<string, string>,
   ): Promise<void> {
+    let exited = false;
     const io: CommandIo = {
       write: (chunk) => { channel.write(chunk); },
       writeErr: (chunk) => { channel.stderr.write(chunk); },
@@ -116,6 +117,7 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
         channel.on("end", handler as (...args: never[]) => void);
       },
       exit: (code) => {
+        exited = true;
         channel.exit(code);
         channel.end();
       },
@@ -123,8 +125,12 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
     try {
       await runner.run(account, command, env, io);
     } catch (err) {
-      channel.stderr.write(new TextEncoder().encode(`provisioning failed: ${String(err)}\n`));
-      io.exit(1);
+      if (!exited) {
+        channel.stderr.write(new TextEncoder().encode(`provisioning failed: ${String(err)}\n`));
+        io.exit(1);
+      } else {
+        log("post_exit_error", { did: account.did, error: String(err) });
+      }
     }
   }
 
