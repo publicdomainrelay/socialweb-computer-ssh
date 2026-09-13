@@ -12,6 +12,7 @@ export interface RequestVmSshRunnerOptions {
   sessions: OAuthSessionSource;
   denoExecutable?: string;
   vmReadyTimeoutSec?: number;
+  extraArgs?: string[];
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
@@ -28,7 +29,7 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Compu
     ): Promise<void> {
       const { policy, args } = policyFromEnv(env);
       const execCommand = renderExecCommand(command, env);
-      const extraArgs = requesterArgsFromEnv(env);
+      const extraArgs = requesterArgsFromEnv(env).concat(opts.extraArgs ?? []);
 
       await opts.sessions.withSessionFor(account.did, async ({ sessionPath }) => {
         const childEnv: Record<string, string> = {};

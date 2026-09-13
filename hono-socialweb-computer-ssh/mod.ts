@@ -40,10 +40,16 @@ const authorizer = createAtprotoKeyAuthorizer({
   log,
 });
 
+const requesterArgs = ((options.requesterArg ?? []) as (string | string[])[])
+  .flatMap((v) => Array.isArray(v) ? v : v.split(","))
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 const runner = createRequestVmSshRunner({
   requesterPath: options.requesterPath as string,
   sessions,
   vmReadyTimeoutSec: options.vmReadyTimeoutSec as number,
+  extraArgs: requesterArgs,
   log,
 });
 

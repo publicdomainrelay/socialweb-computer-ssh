@@ -55,6 +55,11 @@
       "env": "REQUESTER_PATH",
       "default": "../atproto-market/request-vm-ssh/mod.ts"
     },
+    "requester-arg": {
+      "type": "string",
+      "description": "Extra argument passed through to request-vm-ssh, joined with = for a flag value (repeatable, or comma-separated). e.g. --relay-port=5555",
+      "env": "REQUESTER_ARG"
+    },
     "default-command": {
       "type": "string",
       "description": "Command run in the guest when the client requests a shell without a command",

@@ -112,6 +112,10 @@ forwards by default, and this server reads the whole namespace.
 | `LC_KEEP_VM` | Keep the VM after the command exits instead of deleting it. |
 | `LC_SECRETS` | Path to a `[{"path","value"}]` secrets file delivered to the guest. |
 
+Server-side `--requester-arg` (repeatable, `flag=value`) passes through to
+`request-vm-ssh` — for example `--requester-arg --relay-port=5555` against a
+relay you run yourself.
+
 Every `LC_` variable — recognized or not — is also exported into the command's
 environment inside the guest, which is how `echo $LC_MY_VAR` works:
 
@@ -142,11 +146,17 @@ hono-socialweb-computer-ssh               CLI: serves both
 deno task test
 ```
 
-`test/ssh_flow_test.ts` stands up a fake PLC and PDS, registers a
-`requester_associate` record, connects over real SSH, and asserts that an
-associated key is accepted, unassociated keys are rejected, `LC_` variables
-reach the requester's argv and the guest command, and the requester's exit
-code survives the trip back.
+| File | Covers |
+|---|---|
+| `test/ssh_flow_test.ts` | Fake PLC + PDS, a real `requester_associate` record, a real SSH connection, and a real subprocess spawn. An associated key is accepted, unassociated keys are rejected, `LC_` variables reach the requester's argv and the guest command, and the requester's exit code survives the trip back. |
+| `test/session_lease_test.ts` | The tempdir handoff: one account's session in, rotated tokens back, temporary directory removed on success and on failure, concurrent leases not clobbering each other. |
+| `test/oauth_web_test.ts` | Login redirect, callback cookie, key registration as a `requester_associate` record, malformed keys, delete. |
+| `test/requester_contract_test.ts` | Every flag this repo emits is still declared by `request-vm-ssh`'s option table. |
+| `test/common_test.ts` | `LC_` parsing, policy defaults, SSH key comparison, requester argv. |
+
+Not covered: provisioning against a live market. The connection's command runs
+in a real guest only when a bidder is reachable — the market's own harness
+(`atproto-market/test/bidder_ssh_relay_test.ts`) is the place that exercises it.
 
 ## Status
 
