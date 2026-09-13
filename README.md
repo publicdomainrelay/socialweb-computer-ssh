@@ -58,15 +58,23 @@ comment and key order do not matter.
 
 ## The session handoff
 
-`request-vm-ssh` is run with `--atproto-oauth --oauth-session-path <tmp>`, so
-the OAuth session reaches it as a file:
+The session is the polyrepo's portable form — what qr.fedfork.com hands out,
+what hono-pds's `sessionInjector` mints, and what `request-vm-ssh` reads with
+`--atproto-oauth-qr --oauth-session-file`: access and refresh JWT, user DID,
+handle, PDS URL, and the DPoP key as plain JWKs.
 
 ```
 oauth-sessions.json        (this repo's store, keyed by DID)
   -> <tmpdir>/session.json (one account's session, copied in)
-       -> deno run request-vm-ssh --oauth-session-path <tmpdir>/session.json
-  <- <tmpdir>/session.json (refreshed tokens copied back)
+       -> deno run request-vm-ssh --atproto-oauth-qr --oauth-session-file <tmpdir>/session.json
+  <- <tmpdir>/session.json (rotated tokens copied back)
 ```
+
+`request-vm-ssh` also has an `--atproto-oauth --oauth-session-path` mode that
+reads `@atproto/oauth-client`'s own session store. This repo does not use it:
+that store's DPoP entry is a live key object with no `toJSON`, so it does not
+survive a JSON round-trip and cannot be restored from a file. The portable
+form has no such problem — its DPoP key is a JWK that both sides can import.
 
 `request-vm-ssh` rotates the refresh token on use, so the lease copies the file
 back into the store before the temporary directory is removed. Concurrent
@@ -179,7 +187,8 @@ hono-socialweb-computer-ssh               CLI: serves both
 ## Tests
 
 ```sh
-deno task test
+deno task test        # fast, self-contained
+deno task test:live   # provisions a real VM; needs a container runtime
 ```
 
 | File | Covers |
@@ -190,10 +199,12 @@ deno task test
 | `test/oauth_web_test.ts` | Login redirect, callback cookie, key registration as a `requester_associate` record, malformed keys, delete, and rejection of unsigned, tampered, or foreign-signed cookies. |
 | `test/requester_contract_test.ts` | Every flag this repo emits is still declared by `request-vm-ssh`'s option table. |
 | `test/common_test.ts` | `LC_` parsing, policy defaults, SSH key comparison, requester argv. |
+| `test/live_market_test.ts` | **Live.** The whole path against real infrastructure: an ephemeral OAuth-PDS whose session injector mints the requester's session, a fake PLC, a dispatcher, an ephemeral atproto-relay, a bidder subprocess running the local container compute provider, and a guest provisioned from cloud-init. The test registers the SSH key as a `requester_associate` record, connects over SSH, and asserts the command ran in the guest and the guest was destroyed. |
 
-Not covered: provisioning against a live market. The connection's command runs
-in a real guest only when a bidder is reachable — the market's own harness
-(`atproto-market/test/bidder_ssh_relay_test.ts`) is the place that exercises it.
+`live_market_test.ts` needs a container runtime (Apple `container` on darwin,
+docker elsewhere) and skips loudly without one. It runs the ephemeral
+atproto-relay in-process, which needs `--unstable-kv` — hence the separate
+task rather than a plain file in `test/`.
 
 ## Status
 

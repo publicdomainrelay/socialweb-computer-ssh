@@ -13,8 +13,9 @@
   ],
   "tasks": {
     "check": "deno check hono-socialweb-computer-ssh/mod.ts",
-    "test": "deno test -A test/",
-    "start": "deno run -A hono-socialweb-computer-ssh/mod.ts"
+    "test": "deno test -A --ignore=test/live_market_test.ts test/",
+    "start": "deno run -A hono-socialweb-computer-ssh/mod.ts",
+    "test:live": "deno test -A --unstable-kv test/live_market_test.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.19",
@@ -27,6 +28,16 @@
     "@publicdomainrelay/logger": "../typescript-helpers/lib/logger/mod.ts",
     "@publicdomainrelay/oauth-scope": "../typescript-helpers/lib/oauth-scope/mod.ts",
     "@publicdomainrelay/serve": "../typescript-helpers/lib/serve/mod.ts",
-    "@publicdomainrelay/atproto-oauth-helpers": "../atproto-market/lib/atproto-oauth-helpers/mod.ts"
+    "@publicdomainrelay/atproto-oauth-helpers": "../atproto-market/lib/atproto-oauth-helpers/mod.ts",
+    "@publicdomainrelay/atproto-helpers": "../atproto-market/lib/atproto-helpers/mod.ts",
+    "@atproto/crypto": "npm:@atproto/crypto@^0.5.0",
+    "@publicdomainrelay/hono-factory-atproto-repo-deno": "../hono-pds/lib/hono-factory-atproto-repo-deno/mod.ts",
+    "@publicdomainrelay/atproto-repo-deno": "../hono-pds/lib/atproto-repo-deno/mod.ts",
+    "@publicdomainrelay/hono-factory-did-key-ingress-proxy-xrpc": "../did-key-ingress-proxy/lib/hono-factory-did-key-ingress-proxy-xrpc/mod.ts",
+    "@publicdomainrelay/hono-factory-atproto-relay-xrpc": "../atproto-relay/lib/hono-factory-atproto-relay-xrpc/mod.ts",
+    "@publicdomainrelay/atproto-oauth-server-abc": "../hono-pds/lib/abc/atproto-oauth-server/mod.ts",
+    "@publicdomainrelay/container-backend-abc": "../hono-compute-provider/lib/abc/container-backend/mod.ts",
+    "@publicdomainrelay/container-backend-container": "../hono-compute-provider/lib/container-backend-container/mod.ts",
+    "@publicdomainrelay/tls-localhost": "../typescript-helpers/lib/tls-localhost/mod.ts"
   }
 }

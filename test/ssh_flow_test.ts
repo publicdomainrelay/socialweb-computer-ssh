@@ -64,11 +64,15 @@ async function startHarness(records: Array<Record<string, unknown>>): Promise<Ha
   }));
 
   const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`);
-  await sessionStore.store.set(ACCOUNT_DID, {
-    dpopKey: { jwk: { kty: "EC" }, alg: "ES256" },
-    authMethod: "dpop",
-    tokenSet: { sub: ACCOUNT_DID, iss: "https://auth.test", access_token: "access", refresh_token: "refresh" },
-  } as never);
+  await sessionStore.set(ACCOUNT_DID, {
+    accessJwt: "access",
+    refreshJwt: "refresh",
+    userDid: ACCOUNT_DID,
+    handle: "alice.test",
+    pds: "https://pds.test",
+    dpopPublicJwk: { kty: "EC", crv: "P-256", x: "x", y: "y" },
+    dpopPrivateJwk: { kty: "EC", crv: "P-256", x: "x", y: "y", d: "d" },
+  });
 
   const ssh = createSshServer({
     config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key` },
@@ -180,7 +184,8 @@ Deno.test("ssh exec runs the requester with defaults and forwards LC_ env", asyn
     assertEquals(summary.policy, "tangled-vouch");
     assertEquals(summary.policyArgs, { firstFree: true });
     assertEquals(summary.exec, "export LC_MY_VAR='secret_value'; echo $LC_MY_VAR");
-    assertEquals(summary.session[ACCOUNT_DID].tokenSet.access_token, "access");
+    assertEquals(summary.session.accessJwt, "access");
+    assertEquals(summary.session.userDid, ACCOUNT_DID);
     assertEquals(summary.lcEnv, {});
     assertEquals(summary.sessionPath.startsWith("/"), true);
   } finally {

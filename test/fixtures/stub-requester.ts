@@ -4,7 +4,7 @@ function valueOf(args: string[], flag: string): string | undefined {
 }
 
 const args = Deno.args;
-const sessionPath = valueOf(args, "--oauth-session-path") ?? "";
+const sessionPath = valueOf(args, "--oauth-session-file") ?? "";
 let session: unknown = null;
 try {
   session = JSON.parse(await Deno.readTextFile(sessionPath));

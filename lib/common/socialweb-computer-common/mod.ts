@@ -17,6 +17,23 @@ export const LC_SECRETS = "LC_SECRETS";
 
 export const DEFAULT_VM_READY_TIMEOUT_SEC = 300;
 
+/**
+ * The portable OAuth session the rest of the polyrepo exchanges: what
+ * qr.fedfork.com hands out, what hono-pds's session injector mints, and what
+ * request-vm-ssh reads with --atproto-oauth-qr --oauth-session-file. Duplicated
+ * from @publicdomainrelay/oauth-server-common so this leaf layer stays free of
+ * project-local imports.
+ */
+export interface OAuthSessionData {
+  accessJwt: string;
+  refreshJwt: string;
+  userDid: string;
+  handle: string;
+  pds: string;
+  dpopPublicJwk: Record<string, string>;
+  dpopPrivateJwk: Record<string, string>;
+}
+
 export interface PresentedKey {
   algo: string;
   key: string;
@@ -129,10 +146,10 @@ export function buildRequesterArgs(invocation: RequesterInvocation): string[] {
     "run",
     "-A",
     invocation.requesterPath,
-    "--atproto-oauth",
+    "--atproto-oauth-qr",
     "--atproto-handle",
     invocation.accountDid,
-    "--oauth-session-path",
+    "--oauth-session-file",
     invocation.sessionPath,
     "--skip-qr",
     "--policy",

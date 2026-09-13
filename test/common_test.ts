@@ -91,8 +91,8 @@ Deno.test("buildRequesterArgs pins the oauth session and default policy", () => 
   });
   assertEquals(args, [
     "run", "-A", "/repo/request-vm-ssh/mod.ts",
-    "--atproto-oauth", "--atproto-handle", "did:plc:a",
-    "--oauth-session-path", "/tmp/lease/session.json",
+    "--atproto-oauth-qr", "--atproto-handle", "did:plc:a",
+    "--oauth-session-file", "/tmp/lease/session.json",
     "--skip-qr",
     "--policy", "tangled-vouch",
     "--policy-args", '{"firstFree":true}',

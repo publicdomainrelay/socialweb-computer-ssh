@@ -1,18 +1,20 @@
-import type { SessionStore } from "@atproto/oauth-client";
 import type { OAuthSessionSource } from "@publicdomainrelay/socialweb-computer-abc";
+import type { OAuthSessionData } from "@publicdomainrelay/socialweb-computer-common";
 
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
 
-export interface FileSessionStore {
-  store: SessionStore;
-  snapshot(did: string): Promise<Record<string, unknown>>;
-  merge(did: string, value: Record<string, unknown>): Promise<void>;
+export interface SessionStore {
+  get(did: string): Promise<OAuthSessionData | undefined>;
+  set(did: string, session: OAuthSessionData): Promise<void>;
+  del(did: string): Promise<void>;
   list(): Promise<string[]>;
+  withAccount<T>(did: string, fn: () => Promise<T>): Promise<T>;
 }
 
-export function createFileSessionStore(filePath: string): FileSessionStore {
+export function createFileSessionStore(filePath: string): SessionStore {
   let queue: Promise<unknown> = Promise.resolve();
+  const locks = new Map<string, Promise<unknown>>();
 
   function serialize<T>(fn: () => Promise<T>): Promise<T> {
     const run = queue.then(fn, fn);
@@ -20,7 +22,7 @@ export function createFileSessionStore(filePath: string): FileSessionStore {
     return run;
   }
 
-  async function read(): Promise<Record<string, unknown>> {
+  async function read(): Promise<Record<string, OAuthSessionData>> {
     let raw: string;
     try {
       raw = await Deno.readTextFile(filePath);
@@ -32,10 +34,10 @@ export function createFileSessionStore(filePath: string): FileSessionStore {
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error(`${filePath} is not a JSON object`);
     }
-    return parsed as Record<string, unknown>;
+    return parsed as Record<string, OAuthSessionData>;
   }
 
-  async function write(data: Record<string, unknown>): Promise<void> {
+  async function write(data: Record<string, OAuthSessionData>): Promise<void> {
     const dir = filePath.split("/").slice(0, -1).join("/");
     if (dir) await Deno.mkdir(dir, { recursive: true, mode: DIR_MODE });
     const tmp = `${filePath}.${crypto.randomUUID()}.tmp`;
@@ -44,73 +46,56 @@ export function createFileSessionStore(filePath: string): FileSessionStore {
     await Deno.chmod(filePath, FILE_MODE).catch(() => {});
   }
 
-  const store: SessionStore = {
-    get: (sub) => serialize(async () => (await read())[sub] as never),
-    set: (sub, value) => serialize(async () => {
-      const data = await read();
-      data[sub] = value;
-      await write(data);
-    }),
-    del: (sub) => serialize(async () => {
-      const data = await read();
-      delete data[sub];
-      await write(data);
-    }),
-  };
-
   return {
-    store,
-    snapshot: (did) => serialize(async () => {
+    get: (did) => serialize(async () => (await read())[did]),
+    set: (did, session) => serialize(async () => {
       const data = await read();
-      return data[did] === undefined ? {} : { [did]: data[did] };
+      data[did] = session;
+      await write(data);
     }),
-    merge: (did, value) => serialize(async () => {
+    del: (did) => serialize(async () => {
       const data = await read();
-      if (value[did] === undefined) delete data[did];
-      else data[did] = value[did];
+      delete data[did];
       await write(data);
     }),
     list: () => serialize(async () => Object.keys(await read())),
+
+    /**
+     * The requester rotates the refresh token, so two operations for one account
+     * must not both read the same token: the second would be handed a token the
+     * first already consumed. Different accounts still run concurrently.
+     */
+    withAccount<T>(did: string, fn: () => Promise<T>): Promise<T> {
+      const prior = locks.get(did) ?? Promise.resolve();
+      const run = prior.then(fn, fn);
+      const chained = run.catch(() => {});
+      locks.set(did, chained);
+      void chained.then(() => {
+        if (locks.get(did) === chained) locks.delete(did);
+      });
+      return run;
+    },
   };
 }
 
 export interface OAuthSessionSourceOptions {
-  sessionStore: FileSessionStore;
+  sessionStore: SessionStore;
   tempDirPrefix?: string;
 }
 
 export function createFsOAuthSessionSource(opts: OAuthSessionSourceOptions): OAuthSessionSource {
   const prefix = opts.tempDirPrefix ?? "socialweb-computer-ssh-";
-  const locks = new Map<string, Promise<unknown>>();
-
-  /**
-   * The requester rotates the refresh token, so two connections for one account
-   * must not both read the same token: the second would be handed a token the
-   * first already consumed. Different accounts still run concurrently.
-   */
-  function withAccountLock<T>(did: string, fn: () => Promise<T>): Promise<T> {
-    const prior = locks.get(did) ?? Promise.resolve();
-    const run = prior.then(fn, fn);
-    const chained = run.catch(() => {});
-    locks.set(did, chained);
-    void chained.then(() => {
-      if (locks.get(did) === chained) locks.delete(did);
-    });
-    return run;
-  }
 
   return {
     async withSessionFor<T>(did: string, fn: (lease: { sessionPath: string }) => Promise<T>): Promise<T> {
-      return await withAccountLock(did, async () => {
+      return await opts.sessionStore.withAccount(did, async () => {
         const dir = await Deno.makeTempDir({ prefix });
         await Deno.chmod(dir, DIR_MODE).catch(() => {});
         const sessionPath = `${dir}/session.json`;
         try {
-          const snapshot = await opts.sessionStore.snapshot(did);
-          if (Object.keys(snapshot).length === 0) {
-            throw new Error(`no oauth session stored for ${did}`);
-          }
-          await Deno.writeTextFile(sessionPath, JSON.stringify(snapshot, null, 2), { mode: FILE_MODE });
+          const stored = await opts.sessionStore.get(did);
+          if (!stored) throw new Error(`no oauth session stored for ${did}`);
+          await Deno.writeTextFile(sessionPath, JSON.stringify(stored, null, 2), { mode: FILE_MODE });
 
           let result: T | undefined;
           let failure: unknown;
@@ -121,7 +106,7 @@ export function createFsOAuthSessionSource(opts: OAuthSessionSourceOptions): OAu
           }
 
           try {
-            await opts.sessionStore.merge(did, JSON.parse(await Deno.readTextFile(sessionPath)));
+            await opts.sessionStore.set(did, JSON.parse(await Deno.readTextFile(sessionPath)));
           } catch (err) {
             if (!failure) failure = err;
           }
