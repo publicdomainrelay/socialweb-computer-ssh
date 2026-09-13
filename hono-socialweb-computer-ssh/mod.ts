@@ -23,6 +23,17 @@ const log = (event: string, data: Record<string, unknown> = {}) => logger.info(e
 const stateDir = options.stateDir as string;
 await Deno.mkdir(stateDir, { recursive: true });
 
+async function loadOrCreateCookieSecret(): Promise<string> {
+  const path = `${stateDir}/cookie-secret`;
+  const existing = await Deno.readTextFile(path).catch(() => "");
+  if (existing.trim().length >= 32) return existing.trim();
+  const secret = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
+  await Deno.writeTextFile(path, secret, { mode: 0o600 });
+  log("cookie_secret_generated", { path });
+  return secret;
+}
+
+const cookieSecret = await loadOrCreateCookieSecret();
 const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`);
 const sessions = createFsOAuthSessionSource({ sessionStore });
 
@@ -65,7 +76,7 @@ const ssh = createSshServer({
   log,
 });
 
-const web = createOAuthWebFactory({ oauth, log });
+const web = createOAuthWebFactory({ oauth, cookieSecret, log });
 const serve = createServe({
   logger,
   tcp: { addr: options.serveAddr as string, port: options.httpPort as number },

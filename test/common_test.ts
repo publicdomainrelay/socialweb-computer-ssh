@@ -104,7 +104,28 @@ Deno.test("buildRequesterArgs pins the oauth session and default policy", () => 
 Deno.test("requesterArgsFromEnv maps only the documented LC_ knobs", () => {
   assertEquals(requesterArgsFromEnv({}), []);
   assertEquals(requesterArgsFromEnv({ LC_VM_NAME: "box" }), ["--vm-name", "box"]);
+  assertEquals(requesterArgsFromEnv({ LC_VM_NAME: "compute-a1b2.c3_d4" }), ["--vm-name", "compute-a1b2.c3_d4"]);
   assertEquals(requesterArgsFromEnv({ LC_KEEP_VM: "1" }), ["--keep-vm"]);
-  assertEquals(requesterArgsFromEnv({ LC_SECRETS: "/tmp/s.json" }), ["--secrets", "/tmp/s.json"]);
   assertEquals(requesterArgsFromEnv({ LC_OTHER: "x" }), []);
+});
+
+Deno.test("LC_VM_NAME cannot carry anything into the cloud-init template", () => {
+  for (const value of [
+    "box\nEnvironment=EVIL=1",
+    "box\"",
+    "box; rm -rf /",
+    "box$(id)",
+    "box name",
+    "-box",
+    ".box",
+    "box/host",
+    "x".repeat(64),
+    "",
+  ]) {
+    assertThrows(() => requesterArgsFromEnv({ LC_VM_NAME: value }), Error, "must match", `accepted ${JSON.stringify(value)}`);
+  }
+});
+
+Deno.test("LC_SECRETS is refused because it names a file on the SSH host", () => {
+  assertThrows(() => requesterArgsFromEnv({ LC_SECRETS: "/etc/shadow" }), Error, "not accepted from clients");
 });

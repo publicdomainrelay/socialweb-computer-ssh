@@ -17,6 +17,8 @@ export interface KeyAuthorizerOptions {
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
+const MAX_RECORD_PAGES = 20;
+
 interface CacheEntry {
   account: AuthorizedAccount | null;
   records: Record<string, unknown>[];
@@ -61,8 +63,9 @@ export function createAtprotoKeyAuthorizer(opts: KeyAuthorizerOptions = {}): Key
 
   async function listAllRecords(pds: string, did: string): Promise<Record<string, unknown>[]> {
     const records: Record<string, unknown>[] = [];
+    const seen = new Set<string>();
     let cursor: string | undefined;
-    do {
+    for (let page = 0; page < MAX_RECORD_PAGES; page++) {
       const url = new URL(`${pds}/xrpc/com.atproto.repo.listRecords`);
       url.searchParams.set("repo", did);
       url.searchParams.set("collection", BADGE_BLUE_KEYS_NSID);
@@ -75,8 +78,11 @@ export function createAtprotoKeyAuthorizer(opts: KeyAuthorizerOptions = {}): Key
         const value = asRecord(rec.value);
         if (value) records.push(value);
       }
-      cursor = body.cursor || undefined;
-    } while (cursor);
+      const next = body.cursor || undefined;
+      if (!next || seen.has(next)) break;
+      seen.add(next);
+      cursor = next;
+    }
     return records;
   }
 

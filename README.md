@@ -112,13 +112,40 @@ forwards by default, and this server reads the whole namespace.
 | `LC_POLICY_ARGS` | Policy arguments as a JSON object, merged over the defaults. |
 | `LC_POLICY_FIRST_FREE` | `firstFree` — accept the first policy-allowed free bid without waiting out the window. Default `true`. |
 | `LC_POLICY_BID_WINDOW_SEC` | `bidWindowSec` — seconds to collect bids. |
-| `LC_VM_NAME` | VM name (default `compute-<random>`). |
+| `LC_VM_NAME` | VM name (default `compute-<random>`), restricted to `[A-Za-z0-9][A-Za-z0-9._-]{0,62}` because the name is interpolated into the guest's cloud-init. |
 | `LC_KEEP_VM` | Keep the VM after the command exits instead of deleting it. |
-| `LC_SECRETS` | Path to a `[{"path","value"}]` secrets file delivered to the guest. |
+
+`LC_SECRETS` is deliberately *not* accepted from a client: it names a file on
+the SSH host, so honouring it would let any authenticated account read host
+files into a VM it controls. Operators pass it themselves with
+`--requester-arg --secrets=/path/to/secrets.json`.
 
 Server-side `--requester-arg` (repeatable, `flag=value`) passes through to
 `request-vm-ssh` — for example `--requester-arg --relay-port=5555` against a
 relay you run yourself.
+
+## Trust boundaries
+
+Both halves of this service are reachable by anyone on the network, so:
+
+- **The signature is verified, not just the key.** `ssh2` hands the presented
+  signature to the application and never checks it; a public key alone is
+  public — it sits in an unauthenticated PDS record — so matching key material
+  is not proof of anything. `verifyPublicKeySignature` checks the signed blob
+  against the presented key.
+- **The account cookie is signed.** `account_did` carries an HMAC over the DID
+  (`signAccountCookie`/`readAccountCookie`), so a client cannot claim another
+  account by writing a cookie.
+- **The PDS endpoint is fetched over https only** (loopback http excepted),
+  because a DID document is attacker-controlled and its `atproto_pds` entry is
+  an unauthenticated fetch target.
+- **The SSH host fetches an arbitrary DID's records** on an unauthenticated
+  connection attempt. The account lookup is cached per account (5 min, 30 s for
+  failures), but a client presenting many distinct usernames still causes many
+  DID resolutions.
+- **`GET /oauth/login` has no CSRF cookie.** It starts whatever flow it is
+  asked for; the victim ends up signed in as whoever started it. Same shape as
+  the reference implementation.
 
 Every `LC_` variable — recognized or not — is also exported into the command's
 environment inside the guest, which is how `echo $LC_MY_VAR` works:
@@ -158,8 +185,9 @@ deno task test
 | File | Covers |
 |---|---|
 | `test/ssh_flow_test.ts` | Fake PLC + PDS, a real `requester_associate` record, a real SSH connection, and a real subprocess spawn. An associated key is accepted, unassociated keys are rejected, `LC_` variables reach the requester's argv and the guest command, and the requester's exit code survives the trip back. |
-| `test/session_lease_test.ts` | The tempdir handoff: one account's session in, rotated tokens back, temporary directory removed on success and on failure, concurrent leases not clobbering each other. |
-| `test/oauth_web_test.ts` | Login redirect, callback cookie, key registration as a `requester_associate` record, malformed keys, delete. |
+| `test/ssh_auth_test.ts` | Signature verification: a valid signature passes, a signature over another blob, another key's signature, garbage, a missing blob, and an unparseable key are all refused; a probe with no signature passes. |
+| `test/session_lease_test.ts` | The tempdir handoff: one account's session in, rotated tokens back, temporary directory removed on success and on failure, a failed requester still keeping a rotated token, two leases for one account serializing, an unreadable store erroring rather than reading as empty, and the store written `0600`. |
+| `test/oauth_web_test.ts` | Login redirect, callback cookie, key registration as a `requester_associate` record, malformed keys, delete, and rejection of unsigned, tampered, or foreign-signed cookies. |
 | `test/requester_contract_test.ts` | Every flag this repo emits is still declared by `request-vm-ssh`'s option table. |
 | `test/common_test.ts` | `LC_` parsing, policy defaults, SSH key comparison, requester argv. |
 

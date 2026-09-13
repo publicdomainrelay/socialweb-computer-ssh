@@ -1,12 +1,16 @@
 // @ts-types="npm:@types/ssh2@^1"
+import { Buffer } from "node:buffer";
 import { Server, utils, type Connection, type Session } from "ssh2";
 import type { CommandIo, SshServerHandle, SshServerOptions } from "@publicdomainrelay/socialweb-computer-abc";
-import type { AuthorizedAccount } from "@publicdomainrelay/socialweb-computer-common";
+import type { AuthorizedAccount, PresentedKey } from "@publicdomainrelay/socialweb-computer-common";
 
 interface PublicKeyContext {
   method: string;
   username: string;
   key?: { algo: string; data: Uint8Array };
+  signature?: Uint8Array;
+  blob?: Uint8Array;
+  hashAlgo?: string;
   accept(): void;
   reject(methods?: string[]): void;
 }
@@ -15,11 +19,13 @@ interface ChannelLike {
   write(chunk: Uint8Array): boolean;
   stderr: { write(chunk: Uint8Array): boolean };
   exit(code: number): void;
+  close(): void;
   on(event: string, handler: (...args: never[]) => void): void;
   end(): void;
 }
 
 type AcceptFn = (() => unknown) | undefined;
+type RejectFn = (() => void) | undefined;
 
 function parseableHostKey(pem: string): boolean {
   if (!pem.includes("PRIVATE KEY")) return false;
@@ -39,6 +45,31 @@ async function loadOrCreateHostKey(path: string, log: SshServerOptions["log"]): 
   return generated;
 }
 
+/**
+ * ssh2 hands the presented signature to the application and never verifies it
+ * itself, so a client that knows a registered public key could authenticate
+ * without the private half. Public keys here are public by construction -- they
+ * are read from an unauthenticated PDS record -- so the signature is the only
+ * thing that proves possession.
+ *
+ * A publickey request without a signature is a probe: ssh2 answers it with
+ * PK_OK and the client follows up with the signed request, which is verified.
+ */
+export function verifyPublicKeySignature(
+  key: PresentedKey,
+  ctx: { signature?: Uint8Array; blob?: Uint8Array; hashAlgo?: string },
+): boolean {
+  if (!ctx.signature) return true;
+  if (!ctx.blob) return false;
+  const parsed = utils.parseKey(`${key.algo} ${key.key}`);
+  if (parsed instanceof Error) return false;
+  try {
+    return parsed.verify(Buffer.from(ctx.blob), Buffer.from(ctx.signature), ctx.hashAlgo) === true;
+  } catch {
+    return false;
+  }
+}
+
 export function createSshServer(opts: SshServerOptions): SshServerHandle {
   const { config, authorizer, runner, defaultCommand, log } = opts;
   let server: Server | null = null;
@@ -49,6 +80,10 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
     connection.on("authentication", (ctx: PublicKeyContext) => {
       if (ctx.method !== "publickey" || !ctx.key) return ctx.reject(["publickey"]);
       const presented = { algo: ctx.key.algo, key: btoa(String.fromCharCode(...ctx.key.data)) };
+      if (!verifyPublicKeySignature(presented, ctx)) {
+        log("auth_bad_signature", { username: ctx.username, algo: presented.algo });
+        return ctx.reject(["publickey"]);
+      }
       authorizer.authorize(ctx.username, presented)
         .then((resolved) => {
           if (!resolved) {
@@ -71,10 +106,15 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
         const env: Record<string, string> = {};
         let channel: ChannelLike | null = null;
 
-        const ensureChannel = (accept: AcceptFn): ChannelLike | null => {
+        const ensureChannel = (accept: AcceptFn, reject: RejectFn): ChannelLike | null => {
           if (channel) return channel;
           if (typeof accept !== "function") return null;
           channel = accept() as ChannelLike | null;
+          if (!channel) {
+            reject?.();
+            return null;
+          }
+          channel.on("error", ((err: Error) => log("channel_error", { error: String(err) })) as never);
           return channel;
         };
 
@@ -88,18 +128,20 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
           void runOnChannel(ch, account, command, env);
         };
 
-        session.on("env", (accept: AcceptFn, _reject: unknown, info: { key: string; val: string }) => {
+        session.on("env", (accept: AcceptFn, _reject: RejectFn, info: { key: string; val: string }) => {
           env[info.key] = info.val;
-          ensureChannel(accept);
+          ensureChannel(accept, undefined);
         });
 
-        session.on("exec", (accept: AcceptFn, _reject: unknown, info: { command: string }) => {
-          const ch = ensureChannel(accept);
+        session.on("exec", (accept: AcceptFn, reject: RejectFn, info: { command: string }) => {
+          if (channel) return reject?.();
+          const ch = ensureChannel(accept, reject);
           if (ch) start(ch, info.command);
         });
 
-        session.on("shell", (accept: AcceptFn) => {
-          const ch = ensureChannel(accept);
+        session.on("shell", (accept: AcceptFn, reject: RejectFn) => {
+          if (channel) return reject?.();
+          const ch = ensureChannel(accept, reject);
           if (ch) start(ch, defaultCommand);
         });
       });
@@ -114,30 +156,49 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
     command: string,
     env: Record<string, string>,
   ): Promise<void> {
+    let closed = false;
     let exited = false;
+    const encoder = new TextEncoder();
+    const safeWrite = (write: (chunk: Uint8Array) => boolean, chunk: Uint8Array): void => {
+      if (closed) return;
+      try {
+        write(chunk);
+      } catch {
+        closed = true;
+      }
+    };
+
     const io: CommandIo = {
-      write: (chunk) => { channel.write(chunk); },
-      writeErr: (chunk) => { channel.stderr.write(chunk); },
+      write: (chunk) => safeWrite((c) => channel.write(c), chunk),
+      writeErr: (chunk) => safeWrite((c) => channel.stderr.write(c), chunk),
       onData: (handler) => { channel.on("data", handler as (...args: never[]) => void); },
       onClose: (handler) => {
-        channel.on("close", handler as (...args: never[]) => void);
+        channel.on("close", (() => { closed = true; handler(); }) as (...args: never[]) => void);
         channel.on("end", handler as (...args: never[]) => void);
+        channel.on("error", (() => { closed = true; }) as (...args: never[]) => void);
       },
       exit: (code) => {
         exited = true;
-        channel.exit(code);
-        channel.end();
+        if (closed) return;
+        try {
+          channel.exit(code);
+          channel.end();
+        } catch {
+          // channel already gone
+        }
       },
     };
+
     try {
       await runner.run(account, command, env, io);
     } catch (err) {
-      if (!exited) {
-        channel.stderr.write(new TextEncoder().encode(`provisioning failed: ${String(err)}\n`));
-        io.exit(1);
-      } else {
+      if (exited) {
         log("post_exit_error", { did: account.did, error: String(err) });
+        return;
       }
+      log("provisioning_failed", { did: account.did, error: String(err) });
+      safeWrite((c) => channel.stderr.write(c), encoder.encode(`provisioning failed: ${String(err)}\n`));
+      io.exit(1);
     }
   }
 

@@ -14,7 +14,6 @@ export const LC_POLICY_BID_WINDOW_SEC = "LC_POLICY_BID_WINDOW_SEC";
 export const LC_VM_NAME = "LC_VM_NAME";
 export const LC_KEEP_VM = "LC_KEEP_VM";
 export const LC_SECRETS = "LC_SECRETS";
-export const LC_EXEC = "LC_EXEC";
 
 export const DEFAULT_VM_READY_TIMEOUT_SEC = 300;
 
@@ -148,10 +147,20 @@ export function buildRequesterArgs(invocation: RequesterInvocation): string[] {
   return args.concat(invocation.extraArgs ?? []);
 }
 
+export const VM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
+
 export function requesterArgsFromEnv(env: Record<string, string>): string[] {
   const args: string[] = [];
-  if (env[LC_VM_NAME]) args.push("--vm-name", env[LC_VM_NAME]);
-  if (env[LC_SECRETS]) args.push("--secrets", env[LC_SECRETS]);
+  const vmName = env[LC_VM_NAME];
+  if (vmName !== undefined) {
+    if (!VM_NAME_PATTERN.test(vmName)) {
+      throw new Error(`${LC_VM_NAME} must match ${VM_NAME_PATTERN}`);
+    }
+    args.push("--vm-name", vmName);
+  }
+  if (env[LC_SECRETS] !== undefined) {
+    throw new Error(`${LC_SECRETS} names a file on the SSH host and is not accepted from clients`);
+  }
   if (parseBoolean(env[LC_KEEP_VM], false)) args.push("--keep-vm");
   return args;
 }

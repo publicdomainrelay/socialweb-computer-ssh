@@ -104,3 +104,74 @@ Deno.test("concurrent leases for different accounts do not clobber each other", 
     await h.cleanup();
   }
 });
+
+Deno.test("two leases for one account serialize instead of losing a rotation", async () => {
+  const h = await harness();
+  try {
+    await h.store.store.set(DID, { tokenSet: { sub: DID, access_token: "a0" } } as never);
+    const source = createFsOAuthSessionSource({ sessionStore: h.store });
+
+    const seen: string[] = [];
+    await Promise.all([0, 1].map((i) =>
+      source.withSessionFor(DID, async ({ sessionPath }) => {
+        const leased = JSON.parse(await Deno.readTextFile(sessionPath));
+        seen.push(leased[DID].tokenSet.access_token);
+        await new Promise((r) => setTimeout(r, 20));
+        await Deno.writeTextFile(sessionPath, JSON.stringify({
+          [DID]: { tokenSet: { sub: DID, access_token: `rotated-${i}` } },
+        }));
+      })
+    ));
+
+    assertEquals(seen, ["a0", "rotated-0"]);
+    const stored = JSON.parse(await Deno.readTextFile(h.path));
+    assertEquals(stored[DID].tokenSet.access_token, "rotated-1");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+Deno.test("a rotated session is kept even when the requester fails", async () => {
+  const h = await harness();
+  try {
+    await h.store.store.set(DID, { tokenSet: { sub: DID, access_token: "a0" } } as never);
+    const source = createFsOAuthSessionSource({ sessionStore: h.store });
+    await assertRejects(
+      () => source.withSessionFor(DID, async ({ sessionPath }) => {
+        await Deno.writeTextFile(sessionPath, JSON.stringify({
+          [DID]: { tokenSet: { sub: DID, access_token: "rotated" } },
+        }));
+        throw new Error("requester exploded");
+      }),
+      Error,
+      "requester exploded",
+    );
+    const stored = JSON.parse(await Deno.readTextFile(h.path));
+    assertEquals(stored[DID].tokenSet.access_token, "rotated");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+Deno.test("an unreadable store is an error, not an empty store", async () => {
+  const h = await harness();
+  try {
+    await Deno.writeTextFile(h.path, "{ this is not json");
+    await assertRejects(async () => { await h.store.list(); }, SyntaxError);
+    await assertRejects(async () => { await h.store.store.set(DID, { tokenSet: { sub: DID } } as never); }, SyntaxError);
+    assertEquals(await Deno.readTextFile(h.path), "{ this is not json");
+  } finally {
+    await h.cleanup();
+  }
+});
+
+Deno.test("the session store is written owner-only", async () => {
+  const h = await harness();
+  try {
+    await h.store.store.set(DID, { tokenSet: { sub: DID } } as never);
+    const mode = (await Deno.stat(h.path)).mode ?? 0;
+    assertEquals(mode & 0o777, 0o600);
+  } finally {
+    await h.cleanup();
+  }
+});
