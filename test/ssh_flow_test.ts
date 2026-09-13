@@ -255,6 +255,47 @@ Deno.test("ssh rejects an association with the wrong service", async () => {
   }
 });
 
+Deno.test("ssh shell request runs the default command", async () => {
+  const authorized = keypair();
+  const harness = await startHarness([associationRecord(authorized.publicKey)]);
+  try {
+    const result = await new Promise<SshResult>((resolve, reject) => {
+      const conn = new Client();
+      let stdout = "";
+      const timer = setTimeout(() => reject(new Error("ssh timeout")), 30_000);
+      conn.on("ready", () => {
+        (conn as unknown as { shell(w: false, cb: (e: Error | null, s: ClientChannel) => void): void }).shell(
+          false,
+          (err, stream) => {
+            if (err) {
+              clearTimeout(timer);
+              conn.end();
+              return reject(err);
+            }
+            collect(stream, (chunk) => { stdout += chunk; }, () => {});
+            stream.on("close", () => {
+              clearTimeout(timer);
+              conn.end();
+              resolve({ stdout, stderr: "", code: 0 });
+            });
+          },
+        );
+      });
+      conn.on("error", reject);
+      conn.connect({
+        host: "127.0.0.1",
+        port: harness.sshPort,
+        username: ACCOUNT_DID,
+        privateKey: authorized.privateKey,
+        hostVerifier: () => true,
+      });
+    });
+    assertEquals(JSON.parse(result.stdout.trim()).exec, "bash");
+  } finally {
+    await harness.close();
+  }
+});
+
 Deno.test("ssh propagates the requester's exit code", async () => {
   const authorized = keypair();
   const harness = await startHarness([associationRecord(authorized.publicKey)]);

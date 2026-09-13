@@ -130,6 +130,11 @@ LC_POLICY=only-me ssh alice.test@host "hostname"
 
 Non-`LC_` variables are not forwarded.
 
+A `shell` request with no command runs `--default-command` (default `bash`)
+without a TTY, and `pty-req` is refused. The guest command runs with piped
+stdio, so there is no terminal to allocate; OpenSSH reports the refusal and
+continues in cooked mode rather than pretending otherwise.
+
 ## Layout
 
 ```
