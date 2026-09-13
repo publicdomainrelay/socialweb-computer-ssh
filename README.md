@@ -72,6 +72,10 @@ oauth-sessions.json        (this repo's store, keyed by DID)
 back into the store before the temporary directory is removed. Concurrent
 connections for the same account are serialized by the store.
 
+An SSH client that disconnects mid-provision is *not* killed. The requester
+runs to completion, its command writes into a closed channel, and it still
+submits `vm.delete` — killing it early is what would leak the VM.
+
 ## Run
 
 ```sh

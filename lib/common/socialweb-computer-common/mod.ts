@@ -65,6 +65,11 @@ export function sshKeyMatches(stored: unknown, presented: PresentedKey): boolean
   return parsed.algo === presented.algo && parsed.key === presented.key;
 }
 
+export function xrpcPath(nsid: string, params: Record<string, string>): string {
+  const search = new URLSearchParams(params).toString();
+  return `/xrpc/${nsid}${search ? `?${search}` : ""}`;
+}
+
 export function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   return value as Record<string, unknown>;

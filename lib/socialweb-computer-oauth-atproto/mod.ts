@@ -2,6 +2,7 @@ import { OAuthClient } from "@atproto/oauth-client";
 import { IdResolver } from "@atproto/identity";
 import { memoryStateStore, webCryptoRuntime } from "@publicdomainrelay/atproto-oauth-helpers";
 import type { FileSessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
+import { xrpcPath } from "@publicdomainrelay/socialweb-computer-common";
 
 export interface ServerOAuthOptions {
   clientId: string;
@@ -68,9 +69,7 @@ export function createServerOAuth(opts: ServerOAuthOptions): ServerOAuth {
 
   async function xrpc(did: string, nsid: string, params: Record<string, string>, init?: RequestInit) {
     const fetchHandler = await fetchHandlerFor(did);
-    const url = new URL(`https://xrpc.invalid/xrpc/${nsid}`);
-    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const res = await fetchHandler(url.toString(), init);
+    const res = await fetchHandler(xrpcPath(nsid, params), init);
     if (!res.ok) throw new Error(`${nsid} failed: ${res.status} ${await res.text()}`);
     return await res.json() as Record<string, unknown>;
   }

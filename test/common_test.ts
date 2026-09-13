@@ -9,6 +9,7 @@ import {
   shellQuote,
   sshKeyMatches,
   splitSshPublicKey,
+  xrpcPath,
 } from "@publicdomainrelay/socialweb-computer-common";
 
 const KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB0example";
@@ -59,6 +60,18 @@ Deno.test("renderExecCommand exports every LC_ var before the command", () => {
   assertEquals(renderExecCommand("bash", {}), "bash");
   assertEquals(renderExecCommand("true", { PATH: "/bin" }), "true");
   assertEquals(renderExecCommand("true", { LC_A: "it's" }), "export LC_A='it'\\''s'; true");
+});
+
+Deno.test("xrpcPath stays relative so the session audience supplies the host", () => {
+  assertEquals(
+    xrpcPath("com.atproto.repo.listRecords", { repo: "did:plc:a", collection: "x" }),
+    "/xrpc/com.atproto.repo.listRecords?repo=did%3Aplc%3Aa&collection=x",
+  );
+  assertEquals(xrpcPath("com.atproto.repo.applyWrites", {}), "/xrpc/com.atproto.repo.applyWrites");
+  assertEquals(
+    new URL(xrpcPath("com.atproto.repo.getRecord", { rkey: "1" }), "https://pds.test").href,
+    "https://pds.test/xrpc/com.atproto.repo.getRecord?rkey=1",
+  );
 });
 
 Deno.test("shellQuote survives embedded quotes", () => {
