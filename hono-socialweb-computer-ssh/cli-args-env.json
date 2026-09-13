@@ -1,0 +1,89 @@
+{
+  "name": "socialweb-computer-ssh",
+  "description": "SSH front door and AT Protocol OAuth server for the compute market",
+  "options": {
+    "ssh-port": {
+      "type": "number",
+      "description": "TCP port for the SSH server (0 = ephemeral)",
+      "env": "SSH_PORT",
+      "default": 2222
+    },
+    "ssh-hostname": {
+      "type": "string",
+      "description": "Address the SSH server binds",
+      "env": "SSH_HOSTNAME",
+      "default": "127.0.0.1"
+    },
+    "http-port": {
+      "type": "number",
+      "description": "TCP port for the OAuth HTTP server",
+      "env": "HTTP_PORT",
+      "default": 8787
+    },
+    "serve-addr": {
+      "type": "string",
+      "description": "Address the OAuth HTTP server binds",
+      "env": "SERVE_ADDR",
+      "default": "127.0.0.1"
+    },
+    "state-dir": {
+      "type": "string",
+      "description": "Directory holding the OAuth session store, state store, and SSH host key",
+      "env": "STATE_DIR",
+      "default": ".socialweb-computer-ssh"
+    },
+    "host-key-path": {
+      "type": "string",
+      "description": "SSH host key path (generated if missing)",
+      "env": "HOST_KEY_PATH"
+    },
+    "oauth-client-id": {
+      "type": "string",
+      "description": "OAuth client_id; a public https URL serving the client metadata, or http://localhost for loopback",
+      "env": "OAUTH_CLIENT_ID",
+      "default": "http://localhost"
+    },
+    "oauth-redirect-uri": {
+      "type": "string",
+      "description": "OAuth redirect URI handled by this server",
+      "env": "OAUTH_REDIRECT_URI",
+      "default": "http://127.0.0.1:8787/oauth/callback"
+    },
+    "requester-path": {
+      "type": "string",
+      "description": "Path to request-vm-ssh's mod.ts, run through deno for each SSH connection",
+      "env": "REQUESTER_PATH",
+      "default": "../atproto-market/request-vm-ssh/mod.ts"
+    },
+    "default-command": {
+      "type": "string",
+      "description": "Command run in the guest when the client requests a shell without a command",
+      "env": "DEFAULT_COMMAND",
+      "default": "bash"
+    },
+    "vm-ready-timeout-sec": {
+      "type": "number",
+      "description": "Seconds to wait for the provisioned guest's SSH to come up",
+      "env": "VM_READY_TIMEOUT_SEC",
+      "default": 300
+    },
+    "plc-directory-url": {
+      "type": "string",
+      "description": "PLC directory used to resolve handles and DIDs",
+      "env": "PLC_DIRECTORY_URL",
+      "default": "https://plc.directory"
+    },
+    "associations-cache-ttl-sec": {
+      "type": "number",
+      "description": "Seconds a successful key association lookup is cached",
+      "env": "ASSOCIATIONS_CACHE_TTL_SEC",
+      "default": 300
+    },
+    "label": {
+      "type": "string",
+      "description": "Service name used in structured logs",
+      "env": "LABEL",
+      "default": "socialweb-computer-ssh"
+    }
+  }
+}

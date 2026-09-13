@@ -1,0 +1,7 @@
+{
+  "version": "0.0.0",
+  "license": "Unlicense",
+  "compile": {
+    "include": ["cli-args-env.json", "config.json"]
+  }
+}

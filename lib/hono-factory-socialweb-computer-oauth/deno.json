@@ -1,0 +1,6 @@
+{
+  "name": "@publicdomainrelay/hono-factory-socialweb-computer-oauth",
+  "version": "0.0.0",
+  "license": "Unlicense",
+  "exports": "./mod.ts"
+}

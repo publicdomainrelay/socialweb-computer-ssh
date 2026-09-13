@@ -1,0 +1,6 @@
+{
+  "name": "@publicdomainrelay/socialweb-computer-abc",
+  "version": "0.0.0",
+  "license": "Unlicense",
+  "exports": "./mod.ts"
+}
