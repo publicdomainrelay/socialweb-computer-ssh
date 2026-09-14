@@ -1,137 +1,73 @@
-import { Buffer } from "node:buffer";
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { createFactory } from "@hono/hono/factory";
-import { getCookie, setCookie } from "@hono/hono/cookie";
-import type { ServerOAuth } from "@publicdomainrelay/socialweb-computer-oauth-atproto";
-import {
-  BADGE_BLUE_KEYS_NSID,
-  REQUESTER_ASSOCIATE_SERVICE,
-  isRequesterAssociation,
-  splitSshPublicKey,
-} from "@publicdomainrelay/socialweb-computer-common";
+import type { SessionVerifier } from "@publicdomainrelay/socialweb-computer-abc";
+import type { OAuthSessionData } from "@publicdomainrelay/socialweb-computer-common";
+import type { SessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 
-export interface OAuthWebFactoryOptions {
-  oauth: ServerOAuth;
-  cookieSecret: string;
+export interface WebFactoryOptions {
+  sessionStore: SessionStore;
+  verifier: SessionVerifier;
+  scope: string;
+  clientName?: string;
   clientMetadataPath?: string;
+  maxBodyBytes?: number;
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
-export function signAccountCookie(did: string, secret: string): string {
-  return `${did}.${createHmac("sha256", secret).update(did).digest("hex")}`;
-}
+const DEFAULT_MAX_BODY = 16 * 1024;
 
-export function readAccountCookie(value: string | undefined, secret: string): string | null {
-  if (!value) return null;
-  const split = value.lastIndexOf(".");
-  if (split <= 0) return null;
-  const did = value.slice(0, split);
-  const expected = Buffer.from(signAccountCookie(did, secret));
-  const actual = Buffer.from(value);
-  if (expected.length !== actual.length) return null;
-  return timingSafeEqual(expected, actual) ? did : null;
-}
-
-const ACCOUNT_COOKIE = "account_did";
-
-function html(body: string): string {
-  return `<!doctype html><meta charset="utf-8"><title>socialweb-computer-ssh</title>${body}`;
-}
-
-function escape(value: string): string {
-  return value.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c);
-}
-
-export function createOAuthWebFactory(opts: OAuthWebFactoryOptions) {
-  const { oauth } = opts;
+export function createWebFactory(opts: WebFactoryOptions) {
   const clientMetadataPath = opts.clientMetadataPath ?? "/oauth-client-metadata.json";
+  const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
   const log = opts.log ?? (() => {});
-  const session = (cookie: string | undefined): string | null => readAccountCookie(cookie, opts.cookieSecret);
-
-  function keyRows(records: Array<{ uri: string; rkey: string; value: Record<string, unknown> }>, did: string): string {
-    const rows = records.filter((r) => isRequesterAssociation(r.value, did));
-    if (rows.length === 0) return "<p>No SSH keys registered.</p>";
-    return `<ul>${rows.map((r) => {
-      const label = typeof r.value.name === "string" ? r.value.name : r.value.keyId;
-      return `<li><code>${escape(String(label))}</code> <form method="post" action="/keys/delete" style="display:inline">
-        <input type="hidden" name="rkey" value="${escape(r.rkey)}"><button>remove</button></form></li>`;
-    }).join("")}</ul>`;
-  }
 
   return createFactory({
     initApp: (app) => {
-      app.get(clientMetadataPath, (c) => c.json(oauth.clientMetadata()));
+      // The browser runs the whole OAuth flow itself, client-side; this document
+      // is what its client_id points at when the app is not on loopback.
+      app.get(clientMetadataPath, (c) => c.json({
+        client_id: `${new URL(c.req.url).origin}${clientMetadataPath}`,
+        application_type: "web",
+        dpop_bound_access_tokens: true,
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+        redirect_uris: [new URL(c.req.url).origin + "/"],
+        scope: opts.scope,
+        token_endpoint_auth_method: "none",
+        client_name: opts.clientName ?? "socialweb-computer-ssh",
+      }));
 
-      app.get("/", async (c) => {
-        const did = session(getCookie(c, ACCOUNT_COOKIE));
-        if (!did) {
-          return c.html(html(`<h1>socialweb-computer-ssh</h1>
-            <form method="get" action="/oauth/login">
-              <input name="handle" placeholder="handle or DID" required>
-              <button>sign in with AT Protocol</button>
-            </form>`));
+      // The browser deposits the session it obtained so the SSH half can lease
+      // it into a temp dir for the requester. It is unauthenticated by nature --
+      // a session blob is the credential -- so it is proved against the PDS
+      // before being stored, which also means a deposit costs a real round trip
+      // rather than being a cheap way to fill the store.
+      app.post("/session", async (c) => {
+        const declared = Number(c.req.header("content-length") ?? "0");
+        if (Number.isFinite(declared) && declared > maxBodyBytes) {
+          return c.json({ error: "body too large" }, 413);
         }
-        const records = await oauth.listRecords(did, BADGE_BLUE_KEYS_NSID);
-        return c.html(html(`<h1>socialweb-computer-ssh</h1>
-          <p>Signed in as <code>${escape(did)}</code></p>
-          <h2>SSH keys</h2>
-          ${keyRows(records, did)}
-          <h2>Add a key</h2>
-          <form method="post" action="/keys">
-            <input name="name" placeholder="label" required>
-            <textarea name="key" placeholder="ssh-ed25519 AAAA... comment" required></textarea>
-            <button>register</button>
-          </form>`));
-      });
+        const text = await c.req.text();
+        if (text.length > maxBodyBytes) return c.json({ error: "body too large" }, 413);
 
-      app.get("/oauth/login", async (c) => {
-        const handle = c.req.query("handle");
-        if (!handle) return c.html(html("<p>missing handle</p>"), 400);
-        const url = await oauth.authorize(handle);
-        log("oauth_login", { handle });
-        return c.redirect(url);
-      });
+        let parsed: OAuthSessionData;
+        try {
+          parsed = JSON.parse(text) as OAuthSessionData;
+        } catch {
+          return c.json({ error: "expected a JSON session" }, 400);
+        }
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          return c.json({ error: "expected a JSON session" }, 400);
+        }
 
-      app.get("/oauth/callback", async (c) => {
-        const params = new URL(c.req.url).searchParams;
-        const { did } = await oauth.callback(params);
-        setCookie(c, ACCOUNT_COOKIE, signAccountCookie(did, opts.cookieSecret), {
-          path: "/",
-          httpOnly: true,
-          sameSite: "Lax",
-          maxAge: 3600,
-        });
-        log("oauth_callback", { did });
-        return c.redirect("/");
-      });
+        const verified = await opts.verifier.verify(parsed);
+        if (!verified) {
+          log("session_rejected", { did: parsed.userDid });
+          return c.json({ error: "session did not verify against its PDS" }, 401);
+        }
 
-      app.post("/keys", async (c) => {
-        const did = session(getCookie(c, ACCOUNT_COOKIE));
-        if (!did) return c.html(html("<p>not signed in</p>"), 401);
-        const form = await c.req.formData();
-        const key = String(form.get("key") ?? "");
-        const name = String(form.get("name") ?? "");
-        const parsed = splitSshPublicKey(key);
-        if (!parsed) return c.html(html("<p>not an OpenSSH public key</p>"), 400);
-        await oauth.createRecord(did, BADGE_BLUE_KEYS_NSID, {
-          $type: BADGE_BLUE_KEYS_NSID,
-          keyId: `${parsed.algo} ${parsed.key}`,
-          name,
-          challenge: did,
-          service: REQUESTER_ASSOCIATE_SERVICE,
-          createdAt: new Date().toISOString(),
-        });
-        log("key_registered", { did, name });
-        return c.redirect("/");
-      });
-
-      app.post("/keys/delete", async (c) => {
-        const did = session(getCookie(c, ACCOUNT_COOKIE));
-        if (!did) return c.html(html("<p>not signed in</p>"), 401);
-        const form = await c.req.formData();
-        await oauth.deleteRecord(did, BADGE_BLUE_KEYS_NSID, String(form.get("rkey") ?? ""));
-        return c.redirect("/");
+        await opts.sessionStore.withAccount(verified.did, () => opts.sessionStore.set(verified.did, parsed));
+        log("session_deposited", { did: verified.did, handle: verified.handle });
+        return c.json({ did: verified.did, handle: verified.handle });
       });
     },
   });

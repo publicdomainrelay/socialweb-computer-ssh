@@ -37,18 +37,6 @@
       "description": "SSH host key path (generated if missing)",
       "env": "HOST_KEY_PATH"
     },
-    "oauth-client-id": {
-      "type": "string",
-      "description": "OAuth client_id; a public https URL serving the client metadata, or http://localhost for loopback",
-      "env": "OAUTH_CLIENT_ID",
-      "default": "http://localhost"
-    },
-    "oauth-redirect-uri": {
-      "type": "string",
-      "description": "OAuth redirect URI handled by this server",
-      "env": "OAUTH_REDIRECT_URI",
-      "default": "http://127.0.0.1:8787/oauth/callback"
-    },
     "requester-path": {
       "type": "string",
       "description": "Path to request-vm-ssh's mod.ts, run through deno for each SSH connection",
@@ -89,6 +77,36 @@
       "description": "Service name used in structured logs",
       "env": "LABEL",
       "default": "socialweb-computer-ssh"
+    },
+    "web-dir": {
+      "type": "string",
+      "description": "Directory served as the web UI",
+      "env": "WEB_DIR",
+      "default": "web"
+    },
+    "max-sessions": {
+      "type": "number",
+      "description": "Concurrent provisioning runs allowed across all clients; further exec requests are refused",
+      "env": "MAX_SESSIONS",
+      "default": 8
+    },
+    "sessions-per-account": {
+      "type": "number",
+      "description": "Concurrent provisioning runs allowed for one account",
+      "env": "SESSIONS_PER_ACCOUNT",
+      "default": 2
+    },
+    "max-connections": {
+      "type": "number",
+      "description": "Concurrent SSH connections accepted",
+      "env": "MAX_CONNECTIONS",
+      "default": 200
+    },
+    "session-max-sec": {
+      "type": "number",
+      "description": "Hard ceiling on one provisioning run, after which it is terminated",
+      "env": "SESSION_MAX_SEC",
+      "default": 3600
     }
   }
 }

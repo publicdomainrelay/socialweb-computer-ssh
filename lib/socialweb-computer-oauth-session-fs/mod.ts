@@ -12,7 +12,11 @@ export interface SessionStore {
   withAccount<T>(did: string, fn: () => Promise<T>): Promise<T>;
 }
 
-export function createFileSessionStore(filePath: string): SessionStore {
+export interface FileSessionStoreOptions {
+  onCorrupt?: (info: { path: string; quarantine: string }) => void;
+}
+
+export function createFileSessionStore(filePath: string, opts: FileSessionStoreOptions = {}): SessionStore {
   let queue: Promise<unknown> = Promise.resolve();
   const locks = new Map<string, Promise<unknown>>();
 
@@ -30,7 +34,19 @@ export function createFileSessionStore(filePath: string): SessionStore {
       if (err instanceof Deno.errors.NotFound) return {};
       throw err;
     }
-    const parsed = JSON.parse(raw);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      // A truncated store must not read as empty without a trace: the next write
+      // would persist only its own key and drop every other account. Move the
+      // bytes aside so they can be recovered, say so loudly, and carry on rather
+      // than wedging every request on a 500.
+      const quarantine = `${filePath}.corrupt-${Date.now()}`;
+      await Deno.rename(filePath, quarantine);
+      opts.onCorrupt?.({ path: filePath, quarantine });
+      return {};
+    }
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       throw new Error(`${filePath} is not a JSON object`);
     }
@@ -41,7 +57,13 @@ export function createFileSessionStore(filePath: string): SessionStore {
     const dir = filePath.split("/").slice(0, -1).join("/");
     if (dir) await Deno.mkdir(dir, { recursive: true, mode: DIR_MODE });
     const tmp = `${filePath}.${crypto.randomUUID()}.tmp`;
-    await Deno.writeTextFile(tmp, JSON.stringify(data, null, 2), { mode: FILE_MODE });
+    const file = await Deno.open(tmp, { create: true, write: true, truncate: true, mode: FILE_MODE });
+    try {
+      await file.write(new TextEncoder().encode(JSON.stringify(data, null, 2)));
+      await file.sync();
+    } finally {
+      file.close();
+    }
     await Deno.rename(tmp, filePath);
     await Deno.chmod(filePath, FILE_MODE).catch(() => {});
   }
@@ -106,7 +128,14 @@ export function createFsOAuthSessionSource(opts: OAuthSessionSourceOptions): OAu
           }
 
           try {
-            await opts.sessionStore.set(did, JSON.parse(await Deno.readTextFile(sessionPath)));
+            const rotated = JSON.parse(await Deno.readTextFile(sessionPath)) as OAuthSessionData;
+            // The requester is a trusted sibling, but this is still the boundary
+            // where a value crosses back into the store -- it may only write the
+            // account it was leased for.
+            if (rotated?.userDid !== did) {
+              throw new Error(`requester returned a session for ${rotated?.userDid}, expected ${did}`);
+            }
+            await opts.sessionStore.set(did, rotated);
           } catch (err) {
             if (!failure) failure = err;
           }

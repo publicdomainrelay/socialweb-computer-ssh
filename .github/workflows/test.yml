@@ -1,5 +1,8 @@
 name: Test
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -22,55 +25,58 @@ jobs:
 
     steps:
       - name: Checkout socialweb-computer-ssh
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: publicdomainrelay/socialweb-computer-ssh
 
       - name: Checkout typescript-helpers
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: publicdomainrelay/typescript-helpers
           ref: ${{ env.TYPESCRIPT_HELPERS_REF }}
           path: publicdomainrelay/typescript-helpers
 
       - name: Checkout atproto-market
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: publicdomainrelay/atproto-market
           ref: ${{ env.ATPROTO_MARKET_REF }}
           path: publicdomainrelay/atproto-market
 
       - name: Checkout hono-pds
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: publicdomainrelay/hono-pds
           ref: ${{ env.HONO_PDS_REF }}
           path: publicdomainrelay/hono-pds
 
       - name: Checkout did-key-ingress-proxy
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: publicdomainrelay/did-key-ingress-proxy
           ref: ${{ env.DID_KEY_INGRESS_PROXY_REF }}
           path: publicdomainrelay/did-key-ingress-proxy
 
       - name: Checkout atproto-relay
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: publicdomainrelay/atproto-relay
           ref: ${{ env.ATPROTO_RELAY_REF }}
           path: publicdomainrelay/atproto-relay
 
       - name: Checkout hono-compute-provider
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: publicdomainrelay/hono-compute-provider
           ref: ${{ env.HONO_COMPUTE_PROVIDER_REF }}
           path: publicdomainrelay/hono-compute-provider
 
-      - uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
           deno-version: v2.x
+
+      - name: Generated web scope matches the registry
+        run: deno run -A scripts/generate-web-scope.ts
 
       - name: Type-check
         run: deno task check

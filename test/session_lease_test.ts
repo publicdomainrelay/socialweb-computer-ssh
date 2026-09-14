@@ -157,13 +157,25 @@ Deno.test("a rotated session is kept even when the requester fails", async () =>
   }
 });
 
-Deno.test("an unreadable store is an error, not an empty store", async () => {
+Deno.test("a corrupt store is quarantined, not silently emptied", async () => {
   const h = await harness();
   try {
+    await h.store.set(DID, session("a1"));
     await Deno.writeTextFile(h.path, "{ this is not json");
-    await assertRejects(async () => { await h.store.list(); }, SyntaxError);
-    await assertRejects(async () => { await h.store.set(DID, session("a")); }, SyntaxError);
-    assertEquals(await Deno.readTextFile(h.path), "{ this is not json");
+
+    const corruptSeen: string[] = [];
+    const store = createFileSessionStore(h.path, {
+      onCorrupt: ({ quarantine }) => corruptSeen.push(quarantine),
+    });
+
+    // Reads as empty rather than wedging every request on a 500...
+    assertEquals(await store.list(), []);
+    assertEquals(corruptSeen.length, 1);
+    // ...and the bytes are kept, so nothing is actually lost.
+    assertEquals(await Deno.readTextFile(corruptSeen[0]), "{ this is not json");
+
+    await store.set(DID, session("a2"));
+    assertEquals((await store.get(DID))?.accessJwt, "a2");
   } finally {
     await h.cleanup();
   }

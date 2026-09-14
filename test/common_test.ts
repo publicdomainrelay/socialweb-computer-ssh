@@ -105,7 +105,6 @@ Deno.test("requesterArgsFromEnv maps only the documented LC_ knobs", () => {
   assertEquals(requesterArgsFromEnv({}), []);
   assertEquals(requesterArgsFromEnv({ LC_VM_NAME: "box" }), ["--vm-name", "box"]);
   assertEquals(requesterArgsFromEnv({ LC_VM_NAME: "compute-a1b2.c3_d4" }), ["--vm-name", "compute-a1b2.c3_d4"]);
-  assertEquals(requesterArgsFromEnv({ LC_KEEP_VM: "1" }), ["--keep-vm"]);
   assertEquals(requesterArgsFromEnv({ LC_OTHER: "x" }), []);
 });
 

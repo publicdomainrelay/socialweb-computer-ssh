@@ -1,12 +1,14 @@
 import { Command } from "@publicdomainrelay/cli-args-env";
-import { createLogger } from "@publicdomainrelay/logger";
+import { createLogger, createStructuredLogger, getMinLogLevelFromEnv } from "@publicdomainrelay/logger";
 import { createServe } from "@publicdomainrelay/serve";
+import { EventBus } from "@publicdomainrelay/event-bus";
+import { createStaticFilesApp, type StaticFileEvent } from "@publicdomainrelay/hono-factory-static-files-fs";
 import { SOCIALWEB_COMPUTER_SSH_OAUTH_SCOPE } from "@publicdomainrelay/oauth-scope";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
-import { createServerOAuth } from "@publicdomainrelay/socialweb-computer-oauth-atproto";
+import { createAtprotoSessionVerifier } from "@publicdomainrelay/socialweb-computer-oauth-atproto";
 import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import { createRequestVmSshRunner } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
-import { createOAuthWebFactory } from "@publicdomainrelay/hono-factory-socialweb-computer-oauth";
+import { createWebFactory } from "@publicdomainrelay/hono-factory-socialweb-computer-oauth";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import cliArgsEnv from "./cli-args-env.json" with { type: "json" };
 
@@ -21,29 +23,12 @@ const logger = createLogger({ serviceName: options.label as string });
 const log = (event: string, data: Record<string, unknown> = {}) => logger.info(event, data);
 
 const stateDir = options.stateDir as string;
-await Deno.mkdir(stateDir, { recursive: true });
+await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
 
-async function loadOrCreateCookieSecret(): Promise<string> {
-  const path = `${stateDir}/cookie-secret`;
-  const existing = await Deno.readTextFile(path).catch(() => "");
-  if (existing.trim().length >= 32) return existing.trim();
-  const secret = Array.from(crypto.getRandomValues(new Uint8Array(32)), (b) => b.toString(16).padStart(2, "0")).join("");
-  await Deno.writeTextFile(path, secret, { mode: 0o600 });
-  log("cookie_secret_generated", { path });
-  return secret;
-}
-
-const cookieSecret = await loadOrCreateCookieSecret();
-const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`);
-const sessions = createFsOAuthSessionSource({ sessionStore });
-
-const oauth = createServerOAuth({
-  clientId: options.oauthClientId as string,
-  redirectUri: options.oauthRedirectUri as string,
-  scope: SOCIALWEB_COMPUTER_SSH_OAUTH_SCOPE.join(" "),
-  sessionStore,
-  plcDirectoryUrl: options.plcDirectoryUrl as string,
+const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`, {
+  onCorrupt: ({ path, quarantine }) => logger.error("session_store_corrupt", { path, quarantine }),
 });
+const sessions = createFsOAuthSessionSource({ sessionStore });
 
 const authorizer = createAtprotoKeyAuthorizer({
   plcDirectoryUrl: options.plcDirectoryUrl as string,
@@ -60,6 +45,7 @@ const runner = createRequestVmSshRunner({
   requesterPath: options.requesterPath as string,
   sessions,
   vmReadyTimeoutSec: options.vmReadyTimeoutSec as number,
+  sessionMaxSec: options.sessionMaxSec as number,
   extraArgs: requesterArgs,
   log,
 });
@@ -69,6 +55,9 @@ const ssh = createSshServer({
     port: options.sshPort as number,
     hostname: options.sshHostname as string,
     hostKeyPath: (options.hostKeyPath as string) || `${stateDir}/ssh_host_ed25519_key`,
+    maxConnections: options.maxConnections as number,
+    maxSessions: options.maxSessions as number,
+    sessionsPerAccount: options.sessionsPerAccount as number,
   },
   authorizer,
   runner,
@@ -76,16 +65,31 @@ const ssh = createSshServer({
   log,
 });
 
-const web = createOAuthWebFactory({ oauth, cookieSecret, log });
+const web = createWebFactory({
+  sessionStore,
+  verifier: createAtprotoSessionVerifier(),
+  scope: SOCIALWEB_COMPUTER_SSH_OAUTH_SCOPE.join(" "),
+  log,
+});
+
+const bus = new EventBus<StaticFileEvent>();
+bus.subscribe((event) => {
+  if (event.type === "file-not-found") logger.warn("web_404", { path: event.path });
+});
+const staticApp = createStaticFilesApp(options.webDir as string, createStructuredLogger("web", getMinLogLevelFromEnv()), bus);
+
 const serve = createServe({
   logger,
   tcp: { addr: options.serveAddr as string, port: options.httpPort as number },
 });
+// The API is registered first so /session and the metadata document never reach
+// the static handler; everything else falls through to the SPA.
 serve.app.route("/", web.createApp());
+serve.app.route("/", staticApp as never);
 
 const sshPort = await ssh.listen();
 await serve.beginServe();
-log("ready", { sshPort, httpPort: options.httpPort });
+log("ready", { sshPort, httpPort: options.httpPort, webDir: options.webDir });
 
 async function shutdown(): Promise<void> {
   await ssh.shutdown();

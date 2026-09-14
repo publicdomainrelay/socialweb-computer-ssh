@@ -12,7 +12,6 @@ export const LC_POLICY_ARGS = "LC_POLICY_ARGS";
 export const LC_POLICY_FIRST_FREE = "LC_POLICY_FIRST_FREE";
 export const LC_POLICY_BID_WINDOW_SEC = "LC_POLICY_BID_WINDOW_SEC";
 export const LC_VM_NAME = "LC_VM_NAME";
-export const LC_KEEP_VM = "LC_KEEP_VM";
 export const LC_SECRETS = "LC_SECRETS";
 
 export const DEFAULT_VM_READY_TIMEOUT_SEC = 300;
@@ -32,6 +31,7 @@ export interface OAuthSessionData {
   pds: string;
   dpopPublicJwk: Record<string, string>;
   dpopPrivateJwk: Record<string, string>;
+  dpopNonce?: string;
 }
 
 export interface PresentedKey {
@@ -178,6 +178,5 @@ export function requesterArgsFromEnv(env: Record<string, string>): string[] {
   if (env[LC_SECRETS] !== undefined) {
     throw new Error(`${LC_SECRETS} names a file on the SSH host and is not accepted from clients`);
   }
-  if (parseBoolean(env[LC_KEEP_VM], false)) args.push("--keep-vm");
   return args;
 }
