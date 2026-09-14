@@ -67,7 +67,7 @@ jobs:
       - name: Checkout hono-compute-provider
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          repository: publicdomainrelay/hono-compute-provider
+          repository: publicdomainrelay/compute-provider-digitalocean
           ref: ${{ env.HONO_COMPUTE_PROVIDER_REF }}
           path: publicdomainrelay/hono-compute-provider
 
