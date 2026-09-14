@@ -250,6 +250,13 @@ docker elsewhere) and skips loudly without one. It runs the ephemeral
 atproto-relay in-process, which needs `--unstable-kv` — hence the separate
 task rather than a plain file in `test/`.
 
+`.github/workflows/test.yml` is the gate: type-check, the generated scope check,
+and the 47 fast tests. `.github/workflows/live.yml` runs the live test on a
+schedule and on demand, and **does not gate** — on x86_64-linux its bidder
+subprocess dies in `@atproto/identity`'s fetch layer with `Unicast SSRF
+protection requires Node.js 20.6+`, a dependency incompatibility outside this
+repo. It passes on darwin.
+
 ## Status
 
 In development.
