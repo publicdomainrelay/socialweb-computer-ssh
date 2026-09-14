@@ -19,8 +19,9 @@ ssh client
   key against `com.publicdomainrelay.temp.badgeBlueKeys` records of service
   type `requester_associate` — the association a primary AT Protocol account
   writes when it acknowledges a requester.
-- **OAuth HTTP server** runs the AT Protocol OAuth flow so an account can sign
-  in, register SSH public keys, and review its associations.
+- **Web app** (browser, no server-side session) runs the AT Protocol OAuth flow
+  itself, registers SSH public keys as those records, and deposits the resulting
+  session so the SSH half can use it. Modelled on did-key-associator.
 - **Provisioning** shells out through Deno to `request-vm-ssh`, passing the
   OAuth session through a temporary directory.
 - **Client options** travel as `LC_` environment variables:
@@ -55,6 +56,27 @@ records unauthenticated, and accepts the connection only when a record with
 `challenge === <account DID>` and `service === "requester_associate"` carries
 the presented key material. Key comparison is on the SSH wire bytes — the
 comment and key order do not matter.
+
+## The web app
+
+`web/` is a did-key-associator-shaped single page: plain ES modules and web
+components, no build step, no framework, no CDN. It runs PAR + PKCE + DPoP
+against the account's own PDS and writes the key records itself, so **the
+server holds no session cookie, has no login route, and never sees a browser
+credential.** Login is bound to the browser that started it by `sessionStorage`,
+which is what makes a replayed callback useless.
+
+The scope it asks for is not written by hand: `scripts/generate-web-scope.ts`
+emits `web/generated/oauth-scope.js` from
+`typescript-helpers/lib/oauth-scope`, and CI fails if the committed copy drifts
+from the registry.
+
+Its one server endpoint is `POST /session`, which the page calls after signing
+in. It is unauthenticated by nature — the session blob *is* the credential — so
+the blob is proved against its own PDS with a live DPoP-bound
+`com.atproto.server.getSession` before anything is stored, and the DID that call
+confirms is the one it is stored under. A deposit therefore costs a real round
+trip, and a blob claiming someone else's DID is stored under its own.
 
 ## The session handoff
 
@@ -156,19 +178,33 @@ Both halves of this service are reachable by anyone on the network, so:
   public — it sits in an unauthenticated PDS record — so matching key material
   is not proof of anything. `verifyPublicKeySignature` checks the signed blob
   against the presented key.
-- **The account cookie is signed.** `account_did` carries an HMAC over the DID
-  (`signAccountCookie`/`readAccountCookie`), so a client cannot claim another
-  account by writing a cookie.
-- **The PDS endpoint is fetched over https only** (loopback http excepted),
-  because a DID document is attacker-controlled and its `atproto_pds` entry is
-  an unauthenticated fetch target.
-- **The SSH host fetches an arbitrary DID's records** on an unauthenticated
-  connection attempt. The account lookup is cached per account (5 min, 30 s for
-  failures), but a client presenting many distinct usernames still causes many
-  DID resolutions.
-- **`GET /oauth/login` has no CSRF cookie.** It starts whatever flow it is
-  asked for; the victim ends up signed in as whoever started it. Same shape as
-  the reference implementation.
+- **There is no account cookie and no server-side login.** The browser holds
+  the session; the server only ever receives a session blob it has proved
+  against the PDS it names.
+- **An authenticated client still makes this host resolve names.** The account
+  lookup is cached per account and bounded, and the fetch itself is guarded, but
+  a client presenting many distinct usernames still causes that many DID
+  resolutions.
+- **Probes do no work.** An SSH publickey request with no signature proves
+  nothing, so it is answered without touching the network; otherwise an
+  unauthenticated caller could make this host resolve names and read a PDS of
+  their choosing.
+- **Every caller-chosen fetch is guarded.** Redirects are refused rather than
+  followed, responses are size-capped, and a host resolving into private space
+  is not fetched — including for `did:web` usernames, which the identity
+  resolver would otherwise fetch (and downgrade to plain http for localhost).
+- **The requester does not inherit this process's environment.** It reads any
+  option it was not given from its own environment, so inheriting would have
+  turned a deployment's `SECRETS_FILE`, `USER_DATA`, or `SSH_AUTHORIZED_KEY`
+  into every client's provisioning configuration.
+- **The client picks its own fulfillment policy, by design.** `LC_POLICY` and
+  `LC_POLICY_ARGS` reach the RFP the client is paying for; that is product, not
+  a boundary. Everything else a client can influence is listed under
+  [`LC_` environment variables](#lc_-environment-variables).
+- **A client that disconnects mid-provision is not killed**, because the
+  requester only submits `vm.delete` if it reaches the end of its flow —
+  killing it is what would leak the VM. It is instead bounded by
+  `--session-max-sec`.
 
 ## Layout
 
