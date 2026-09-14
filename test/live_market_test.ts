@@ -144,6 +144,14 @@ async function createRecordDpop(
   if (!res.ok) throw new Error(`createRecord ${collection} failed: ${res.status} ${await res.text()}`);
 }
 
+function generateSshKey(): { private: string; public: string } {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const pair = utils.generateKeyPairSync("ed25519");
+    if (!(utils.parseKey(pair.private) instanceof Error)) return pair;
+  }
+  throw new Error("ssh2 could not produce a parseable ed25519 key");
+}
+
 function sshExec(
   port: number,
   privateKey: string,
@@ -266,7 +274,7 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     // The association this repo's SSH door authenticates against: the account's
     // own badgeBlueKeys record of service requester_associate whose keyId is the
     // OpenSSH public key.
-    const sshKey = utils.generateKeyPairSync("ed25519");
+    const sshKey = generateSshKey();
     const pub = splitSshPublicKey(sshKey.public)!;
     await createRecordDpop(pdsUrl, requesterInj.sessionData, requesterAcct.did, BADGE_BLUE_KEYS_NSID,
       crypto.randomUUID().replace(/-/g, "").slice(0, 13), {

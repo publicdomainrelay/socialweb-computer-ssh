@@ -149,9 +149,17 @@ function collect(stream: ClientChannel, onOut: (s: string) => void, onErr: (s: s
   stream.stderr.on("data", (chunk: Uint8Array) => onErr(decoder.decode(chunk)));
 }
 
+// ssh2's key generator occasionally emits a private key it cannot itself
+// re-parse. Retry until it produces one that works, rather than letting a flake
+// surface as an authentication failure.
 function keypair(): { privateKey: string; publicKey: string } {
-  const pair = utils.generateKeyPairSync("ed25519");
-  return { privateKey: pair.private, publicKey: pair.public };
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const pair = utils.generateKeyPairSync("ed25519");
+    if (!(utils.parseKey(pair.private) instanceof Error)) {
+      return { privateKey: pair.private, publicKey: pair.public };
+    }
+  }
+  throw new Error("ssh2 could not produce a parseable ed25519 key");
 }
 
 function associationRecord(publicKey: string, overrides: Record<string, unknown> = {}): Record<string, unknown> {

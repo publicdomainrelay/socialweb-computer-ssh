@@ -9,11 +9,15 @@ const BLOB = Buffer.from("session-id || userauth-request");
 const OTHER_BLOB = Buffer.from("a different session");
 
 function signer() {
-  const pair = utils.generateKeyPairSync("ed25519");
-  const priv = utils.parseKey(pair.private);
-  if (priv instanceof Error) throw priv;
-  const pub = splitSshPublicKey(pair.public)!;
-  return { priv, pub };
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const pair = utils.generateKeyPairSync("ed25519");
+    const priv = utils.parseKey(pair.private);
+    if (priv instanceof Error) continue;
+    const pub = splitSshPublicKey(pair.public);
+    if (!pub) continue;
+    return { priv, pub };
+  }
+  throw new Error("ssh2 could not produce a parseable ed25519 key");
 }
 
 Deno.test("a publickey probe with no signature is allowed through", () => {
