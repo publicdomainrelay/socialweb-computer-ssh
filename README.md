@@ -7,7 +7,7 @@ you typed runs inside that VM, and the VM is torn down when it exits.
 
 ```
 ssh client
-  -> socialweb-computer-ssh        (this repo: SSH server + OAuth HTTP server)
+  -> socialweb-computer-ssh        (this repo: SSH server + web app)
        -> badgeBlueKeys lookup     (requester_associate association for the key)
        -> deno run request-vm-ssh  (RFP -> bid -> accept -> cloud-init -> guest)
             -> command runs in the guest, output streams back over SSH
@@ -102,20 +102,29 @@ form has no such problem — its DPoP key is a JWK that both sides can import.
 back into the store before the temporary directory is removed. Concurrent
 connections for the same account are serialized by the store.
 
-An SSH client that disconnects mid-provision is *not* killed. The requester
-runs to completion, its command writes into a closed channel, and it still
-submits `vm.delete` — killing it early is what would leak the VM.
+An SSH client that disconnects mid-provision is *not* killed: the requester runs
+to completion, its command writes into a closed channel, and it still submits
+`vm.delete`. Killing it early is what would leak the VM, so a run is bounded by
+`--session-max-sec` instead (`LC_KEEP_VM` used to opt out of teardown and is
+gone).
 
 ## Run
 
 ```sh
 deno task start -- \
   --requester-path ../atproto-market/request-vm-ssh/mod.ts \
-  --oauth-client-id http://localhost \
-  --oauth-redirect-uri http://127.0.0.1:8787/oauth/callback
+  --oauth-client-id https://ssh.example.com/oauth-client-metadata.json
 ```
 
-The SSH server listens on `127.0.0.1:2222` and the OAuth server on
+`--oauth-client-id` must match the `client_id` the page signs in with — the
+metadata document this server publishes, which is what the page uses whenever it
+is not on loopback. It is passed to the requester as `--oauth-session-client-id`
+because a refresh token is bound to the client that obtained it: a session this
+page deposited has to be refreshed as this client, not as whatever the requester
+would otherwise assume. Omit it on loopback, where the page uses the
+`http://localhost?...` form and the requester's default applies.
+
+The SSH server listens on `127.0.0.1:2222` and the web app on
 `127.0.0.1:8787`. State (session store, SSH host key) lands in
 `.socialweb-computer-ssh/`.
 
@@ -143,7 +152,6 @@ forwards by default, and this server reads the whole namespace.
 | `LC_POLICY_FIRST_FREE` | `firstFree` — accept the first policy-allowed free bid without waiting out the window. Default `true`. |
 | `LC_POLICY_BID_WINDOW_SEC` | `bidWindowSec` — seconds to collect bids. |
 | `LC_VM_NAME` | VM name (default `compute-<random>`), restricted to `[A-Za-z0-9][A-Za-z0-9._-]{0,62}` because the name is interpolated into the guest's cloud-init. |
-| `LC_KEEP_VM` | Keep the VM after the command exits instead of deleting it. |
 
 `LC_SECRETS` is deliberately *not* accepted from a client: it names a file on
 the SSH host, so honouring it would let any authenticated account read host
