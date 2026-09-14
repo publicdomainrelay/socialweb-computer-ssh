@@ -41,6 +41,12 @@ const requesterArgs = ((options.requesterArg ?? []) as (string | string[])[])
   .map((s) => s.trim())
   .filter(Boolean);
 
+// The session the web app deposits was issued to this deployment's client, so
+// the requester has to refresh as that client rather than its own default.
+if (options.oauthClientId) {
+  requesterArgs.push("--oauth-session-client-id", options.oauthClientId as string);
+}
+
 const runner = createRequestVmSshRunner({
   requesterPath: options.requesterPath as string,
   sessions,

@@ -107,6 +107,11 @@
       "description": "Hard ceiling on one provisioning run, after which it is terminated",
       "env": "SESSION_MAX_SEC",
       "default": 3600
+    },
+    "oauth-client-id": {
+      "type": "string",
+      "description": "OAuth client_id the web app signs in with, and therefore what the requester must refresh as. For a non-loopback deployment this is https://<host>/oauth-client-metadata.json. Omit to leave the requester's own default.",
+      "env": "OAUTH_CLIENT_ID"
     }
   }
 }

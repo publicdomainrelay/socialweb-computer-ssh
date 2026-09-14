@@ -10,10 +10,14 @@ on:
 
 env:
   TYPESCRIPT_HELPERS_REF: 1ab5cf2c44221786330b29356ec38c5bdd4cfc56
-  ATPROTO_MARKET_REF: 107081ffcad9ca1989d796b8d3b4c9da281214e0
+  ATPROTO_MARKET_REF: 604f2554b6e943148667ca4e73d6a5eac1b700f0
   HONO_PDS_REF: dc3496ff4a524f7ea182058e68fcadea6ff93607
   DID_KEY_INGRESS_PROXY_REF: b616b53056af9062181b897f9c068cef14197619
   ATPROTO_RELAY_REF: 9c26e76c5302ab649b5c681bdf856e2cba0e0023
+  POLICY_ENGINE_REF: b8e5cc83d02f9fe8b217d02691e99a1dfc46a4fe
+  DENO_WORKER_SANDBOX_REF: a3bbc3f6c64995b78c4ea833a3a75f1a171b460a
+  DENO_MACOS_RUNNER_DESKTOP_REF: dc7319fe4ad482ac561ebee4610efca1bcea58e3
+  HONO_JSR_REF: 57fcf26de0a1f4fb112fc2c918b5b11f3b796b21
   HONO_COMPUTE_PROVIDER_REF: f640cbe817f5d7b6f191a1cfa80a3b3971cdb237
 
 jobs:
@@ -70,6 +74,34 @@ jobs:
           repository: publicdomainrelay/compute-provider-digitalocean
           ref: ${{ env.HONO_COMPUTE_PROVIDER_REF }}
           path: publicdomainrelay/hono-compute-provider
+
+      - name: Checkout policy-engine
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: publicdomainrelay/policy-engine
+          ref: ${{ env.POLICY_ENGINE_REF }}
+          path: publicdomainrelay/policy-engine
+
+      - name: Checkout deno-worker-sandbox
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: publicdomainrelay/deno-hono-sandbox
+          ref: ${{ env.DENO_WORKER_SANDBOX_REF }}
+          path: publicdomainrelay/deno-worker-sandbox
+
+      - name: Checkout deno-macos-runner-desktop
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: publicdomainrelay/deno-macos-runner-desktop
+          ref: ${{ env.DENO_MACOS_RUNNER_DESKTOP_REF }}
+          path: publicdomainrelay/deno-macos-runner-desktop
+
+      - name: Checkout hono-jsr
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: publicdomainrelay/hono-package-registry
+          ref: ${{ env.HONO_JSR_REF }}
+          path: publicdomainrelay/hono-jsr
 
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2
         with:
