@@ -1,0 +1,79 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  TYPESCRIPT_HELPERS_REF: 1ab5cf2c44221786330b29356ec38c5bdd4cfc56
+  ATPROTO_MARKET_REF: 107081ffcad9ca1989d796b8d3b4c9da281214e0
+  HONO_PDS_REF: dc3496ff4a524f7ea182058e68fcadea6ff93607
+  DID_KEY_INGRESS_PROXY_REF: b616b53056af9062181b897f9c068cef14197619
+  ATPROTO_RELAY_REF: 9c26e76c5302ab649b5c681bdf856e2cba0e0023
+  HONO_COMPUTE_PROVIDER_REF: f640cbe817f5d7b6f191a1cfa80a3b3971cdb237
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: publicdomainrelay/socialweb-computer-ssh
+
+    steps:
+      - name: Checkout socialweb-computer-ssh
+        uses: actions/checkout@v4
+        with:
+          path: publicdomainrelay/socialweb-computer-ssh
+
+      - name: Checkout typescript-helpers
+        uses: actions/checkout@v4
+        with:
+          repository: publicdomainrelay/typescript-helpers
+          ref: ${{ env.TYPESCRIPT_HELPERS_REF }}
+          path: publicdomainrelay/typescript-helpers
+
+      - name: Checkout atproto-market
+        uses: actions/checkout@v4
+        with:
+          repository: publicdomainrelay/atproto-market
+          ref: ${{ env.ATPROTO_MARKET_REF }}
+          path: publicdomainrelay/atproto-market
+
+      - name: Checkout hono-pds
+        uses: actions/checkout@v4
+        with:
+          repository: publicdomainrelay/hono-pds
+          ref: ${{ env.HONO_PDS_REF }}
+          path: publicdomainrelay/hono-pds
+
+      - name: Checkout did-key-ingress-proxy
+        uses: actions/checkout@v4
+        with:
+          repository: publicdomainrelay/did-key-ingress-proxy
+          ref: ${{ env.DID_KEY_INGRESS_PROXY_REF }}
+          path: publicdomainrelay/did-key-ingress-proxy
+
+      - name: Checkout atproto-relay
+        uses: actions/checkout@v4
+        with:
+          repository: publicdomainrelay/atproto-relay
+          ref: ${{ env.ATPROTO_RELAY_REF }}
+          path: publicdomainrelay/atproto-relay
+
+      - name: Checkout hono-compute-provider
+        uses: actions/checkout@v4
+        with:
+          repository: publicdomainrelay/hono-compute-provider
+          ref: ${{ env.HONO_COMPUTE_PROVIDER_REF }}
+          path: publicdomainrelay/hono-compute-provider
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Type-check
+        run: deno task check
+
+      - name: Test
+        run: deno task test
