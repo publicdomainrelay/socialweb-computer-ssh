@@ -7,7 +7,7 @@ import { SOCIALWEB_COMPUTER_SSH_OAUTH_SCOPE } from "@publicdomainrelay/oauth-sco
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
 import { createAtprotoSessionVerifier } from "@publicdomainrelay/socialweb-computer-oauth-atproto";
 import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
-import { createRequestVmSshRunner } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
+import { createInProcessRequester } from "@publicdomainrelay/socialweb-computer-requester-inproc";
 import { createWebFactory } from "@publicdomainrelay/hono-factory-socialweb-computer-oauth";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import cliArgsEnv from "./cli-args-env.json" with { type: "json" };
@@ -47,12 +47,18 @@ if (options.oauthClientId) {
   requesterArgs.push("--oauth-session-client-id", options.oauthClientId as string);
 }
 
-const runner = createRequestVmSshRunner({
-  requesterPath: options.requesterPath as string,
-  sessions,
+const relayUrls = ((options.relayUrl as string) || "")
+  .split(",").map((s) => s.trim()).filter(Boolean);
+
+// In-process: one agent per account owns the session, so concurrent
+// connections share a refresh lock instead of racing a single-use token.
+const runner = createInProcessRequester({
+  sessionStore,
+  attestationKeyPath: `${stateDir}/attestation-key`,
+  plcDirectoryUrl: options.plcDirectoryUrl as string,
+  ingressProxyHost: options.ingressProxyHost as string,
+  relayUrls,
   vmReadyTimeoutSec: options.vmReadyTimeoutSec as number,
-  sessionMaxSec: options.sessionMaxSec as number,
-  extraArgs: requesterArgs,
   log,
 });
 

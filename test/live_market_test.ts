@@ -33,7 +33,7 @@ import { createDockerBackend } from "@publicdomainrelay/container-backend-docker
 import { generateLocalhostTlsCert } from "@publicdomainrelay/tls-localhost";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
 import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
-import { createRequestVmSshRunner } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
+import { createInProcessRequester } from "@publicdomainrelay/socialweb-computer-requester-inproc";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import { BADGE_BLUE_KEYS_NSID, splitSshPublicKey } from "@publicdomainrelay/socialweb-computer-common";
 import { installFetchInterceptor } from "../../atproto-market/test/fetch-interceptor.ts";
@@ -348,20 +348,13 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     const ssh = createSshServer({
       config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key` },
       authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl }),
-      runner: createRequestVmSshRunner({
-        requesterPath: `${ORG}/atproto-market/request-vm-ssh/mod.ts`,
-        sessions: createFsOAuthSessionSource({ sessionStore }),
+      runner: createInProcessRequester({
+        sessionStore,
+        attestationKeyPath: `${stateDir}/attestation-key`,
+        plcDirectoryUrl,
+        ingressProxyHost,
+        relayUrls: [relayUrl],
         vmReadyTimeoutSec: 180,
-        extraArgs: [
-          "--firehose-mode", "subscriberepos",
-          "--firehose-url", relayUrl,
-          "--relay-url", relayUrl,
-          "--plc-directory-url", plcDirectoryUrl,
-          "--ingress-proxy-host", ingressProxyHost,
-          "--no-ingress-proxy",
-          "--skip-rbac",
-          "--guest-host-aliases", `${gateway} relay.localhost`,
-        ],
         log: (event, data) => log.info(event, data ?? {}),
       }),
       defaultCommand: "bash",

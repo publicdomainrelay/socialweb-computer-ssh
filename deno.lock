@@ -7,10 +7,14 @@
     "jsr:@cliffy/table@1.2.1": "1.2.1",
     "jsr:@hono/hono@*": "4.12.28",
     "jsr:@hono/hono@4": "4.12.28",
+    "jsr:@hono/hono@^4.6.0": "4.12.28",
     "jsr:@std/assert@^1.0.19": "1.0.19",
     "jsr:@std/fmt@^1.0.10": "1.0.10",
     "jsr:@std/internal@^1.0.12": "1.0.14",
+    "jsr:@std/internal@^1.0.14": "1.0.14",
+    "jsr:@std/path@1": "1.1.6",
     "jsr:@std/text@^1.0.19": "1.0.19",
+    "jsr:@std/yaml@1": "1.1.1",
     "npm:@atiproto/key-resolver@0.1": "0.1.0",
     "npm:@atproto/api@~0.20.8": "0.20.28",
     "npm:@atproto/common-web@0.5": "0.5.6",
@@ -31,7 +35,8 @@
     "npm:@types/ssh2@1": "1.15.6",
     "npm:multiformats@13": "13.4.2",
     "npm:multiformats@^13.3.0": "13.4.2",
-    "npm:ssh2@^1.16.0": "1.17.0"
+    "npm:ssh2@^1.16.0": "1.17.0",
+    "npm:yaml@^2.7.0": "2.9.0"
   },
   "jsr": {
     "@cliffy/command@1.2.1": {
@@ -66,7 +71,7 @@
     "@std/assert@1.0.19": {
       "integrity": "eaada96ee120cb980bc47e040f82814d786fe8162ecc53c91d8df60b8755991e",
       "dependencies": [
-        "jsr:@std/internal"
+        "jsr:@std/internal@^1.0.12"
       ]
     },
     "@std/fmt@1.0.10": {
@@ -75,8 +80,17 @@
     "@std/internal@1.0.14": {
       "integrity": "291516b3d4c35024d6ffbc0a9df5bf4c64116e05b50012cf846710152d2ffdf7"
     },
+    "@std/path@1.1.6": {
+      "integrity": "c68485c2a4dfbb5ae3cc74fae4e8c4e5d874cf8a8ed12927917235c758b46cbe",
+      "dependencies": [
+        "jsr:@std/internal@^1.0.14"
+      ]
+    },
     "@std/text@1.0.19": {
       "integrity": "003a0e032d360e8c3a4e0410fb792c77a66bd6553fee9d60c6ec1bce30d29223"
+    },
+    "@std/yaml@1.1.1": {
+      "integrity": "a57665ecf3d17b926380593a56625d8a10cc7281802f1e993b5ebc94a48e71f8"
     }
   },
   "npm": {
@@ -1402,6 +1416,10 @@
     },
     "y18n@5.0.8": {
       "integrity": "sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA=="
+    },
+    "yaml@2.9.0": {
+      "integrity": "sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==",
+      "bin": true
     },
     "yargs-parser@22.0.0": {
       "integrity": "sha512-rwu/ClNdSMpkSrUb+d6BRsSkLUq1fmfsY6TOpYzTwvwkg1/NRG85KBy3kq++A8LKQwX6lsu+aWad+2khvuXrqw=="

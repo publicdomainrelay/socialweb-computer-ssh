@@ -4,12 +4,31 @@ import { Hono } from "@hono/hono";
 import { Client, utils, type ClientChannel } from "ssh2";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
 import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
-import { createRequestVmSshRunner } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
+import { renderExecCommand } from "@publicdomainrelay/socialweb-computer-common";
+import type { ComputeCommandRunner } from "@publicdomainrelay/socialweb-computer-abc";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import { BADGE_BLUE_KEYS_NSID, splitSshPublicKey } from "@publicdomainrelay/socialweb-computer-common";
 
 const ACCOUNT_DID = "did:plc:testaccount0000000000000";
-const STUB_REQUESTER = new URL("./fixtures/stub-requester.ts", import.meta.url).pathname;
+// A fake runner: this test covers the SSH plumbing, not provisioning. It reports
+// the same fields the spawned stub requester used to echo from its argv.
+function fakeRequester(): ComputeCommandRunner {
+  return {
+    async run(account, command, env, io): Promise<void> {
+      const { policyFromEnv } = await import("@publicdomainrelay/socialweb-computer-common");
+      const { policy, args } = policyFromEnv(env);
+      await io.write(new TextEncoder().encode(JSON.stringify({
+        accountDid: account.did,
+        policy,
+        policyArgs: args,
+        exec: renderExecCommand(command, env),
+        lcEnv: Object.fromEntries(Object.entries(env).filter(([k]) => k.startsWith("LC_"))),
+      }) + "\n"));
+      const exit = /--stub-exit (\d+)/.exec(command);
+      io.exit(exit ? Number(exit[1]) : 0);
+    },
+  };
+}
 
 interface Harness {
   sshPort: number;
@@ -77,11 +96,7 @@ async function startHarness(records: Array<Record<string, unknown>>): Promise<Ha
   const ssh = createSshServer({
     config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key` },
     authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl: `http://127.0.0.1:${plc.port}`, cacheTtlMs: 0, negativeCacheTtlMs: 0 }),
-    runner: createRequestVmSshRunner({
-      requesterPath: STUB_REQUESTER,
-      sessions: createFsOAuthSessionSource({ sessionStore }),
-      denoExecutable: Deno.execPath(),
-    }),
+    runner: fakeRequester(),
     defaultCommand: "bash",
     log: () => {},
   });
@@ -192,10 +207,9 @@ Deno.test("ssh exec runs the requester with defaults and forwards LC_ env", asyn
     assertEquals(summary.policy, "tangled-vouch");
     assertEquals(summary.policyArgs, { firstFree: true });
     assertEquals(summary.exec, "export LC_MY_VAR='secret_value'; echo $LC_MY_VAR");
-    assertEquals(summary.session.accessJwt, "access");
-    assertEquals(summary.session.userDid, ACCOUNT_DID);
-    assertEquals(summary.lcEnv, {});
-    assertEquals(summary.sessionPath.startsWith("/"), true);
+    // In-process there is no child environment for LC_ vars to leak into, so
+    // they reach the runner directly -- and non-LC vars still do not.
+    assertEquals(summary.lcEnv, { LC_MY_VAR: "secret_value" });
   } finally {
     await harness.close();
   }

@@ -112,6 +112,17 @@
       "type": "string",
       "description": "OAuth client_id the web app signs in with, and therefore what the requester must refresh as. For a non-loopback deployment this is https://<host>/oauth-client-metadata.json. Omit to leave the requester's own default.",
       "env": "OAUTH_CLIENT_ID"
+    },
+    "ingress-proxy-host": {
+      "type": "string",
+      "description": "XRPC relay dispatcher host the requester registers with and discovers bidders through",
+      "env": "INGRESS_PROXY_HOST",
+      "default": "xrpc.fedproxy.com"
+    },
+    "relay-url": {
+      "type": "string",
+      "description": "Comma-separated ATProto relay URLs for firehose bid and event discovery",
+      "env": "RELAY_URL"
     }
   }
 }
