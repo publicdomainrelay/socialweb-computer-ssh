@@ -1,6 +1,6 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { fetchGuarded, isPrivateAddress, resolvesToPublicAddress } from "@publicdomainrelay/socialweb-computer-atproto";
-import { requesterArgsFromEnv } from "@publicdomainrelay/socialweb-computer-common";
+import { vmNameFromEnv } from "@publicdomainrelay/socialweb-computer-common";
 
 Deno.test("private and special addresses are recognised", () => {
   for (const address of [
@@ -42,9 +42,10 @@ Deno.test("fetchGuarded refuses a redirect rather than following it", async () =
 });
 
 Deno.test("client env cannot reach the host's own configuration", () => {
-  // In-process there is no child environment to leak into, but these must still
-  // not be accepted from a client as options.
-  assertEquals(requesterArgsFromEnv({ LC_KEEP_VM: "1" }), []);
-  assertEquals(requesterArgsFromEnv({ SECRETS_FILE: "/secrets.json" }), []);
-  assertEquals(requesterArgsFromEnv({ SSH_AUTHORIZED_KEY: "ssh-ed25519 AAAA" }), []);
+  // These named host files the spawned requester used to read. In-process there
+  // is no child to carry them, and vmNameFromEnv ignores everything but the one
+  // option a client is allowed to set.
+  assertEquals(vmNameFromEnv({ LC_KEEP_VM: "1" }), undefined);
+  assertEquals(vmNameFromEnv({ SECRETS_FILE: "/secrets.json" }), undefined);
+  assertEquals(vmNameFromEnv({ SSH_AUTHORIZED_KEY: "ssh-ed25519 AAAA" }), undefined);
 });

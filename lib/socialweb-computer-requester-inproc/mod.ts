@@ -6,7 +6,7 @@ import type { SessionStore } from "@publicdomainrelay/socialweb-computer-oauth-s
 import type { CommandIo, ComputeCommandRunner } from "@publicdomainrelay/socialweb-computer-abc";
 import type { ServeHandle } from "@publicdomainrelay/serve";
 import type { AuthorizedAccount } from "@publicdomainrelay/socialweb-computer-common";
-import { policyFromEnv, renderExecCommand, requesterArgsFromEnv } from "@publicdomainrelay/socialweb-computer-common";
+import { policyFromEnv, renderExecCommand, vmNameFromEnv } from "@publicdomainrelay/socialweb-computer-common";
 import { pollGuestReady, runSessionOverTunnel } from "./bridge.ts";
 
 export interface InProcessRequesterOptions {
@@ -108,8 +108,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
       try {
         const { policy, args: policyArgs } = policyFromEnv(env);
         const execCommand = renderExecCommand(command, env);
-        const extraArgs = requesterArgsFromEnv(env);
-        void extraArgs;
+        const vmName = vmNameFromEnv(env);
         log("requester_start", { did: account.did, policy, commandChars: command.length });
 
         const agent = await agentFor(account.did);
@@ -139,6 +138,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
           relayUrls: opts.relayUrls,
           eventStreams: eventStreams as never,
           execProgram: execCommand,
+          vmName,
           vmReadyTimeoutSec: opts.vmReadyTimeoutSec,
           sshProvider: providerFor(io),
           policy: { name: policy, args: policyArgs },

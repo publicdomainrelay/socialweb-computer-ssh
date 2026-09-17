@@ -1,11 +1,10 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
-  buildRequesterArgs,
+  vmNameFromEnv,
   isRequesterAssociation,
   lcEnv,
   policyFromEnv,
   renderExecCommand,
-  requesterArgsFromEnv,
   shellQuote,
   sshKeyMatches,
   splitSshPublicKey,
@@ -79,33 +78,11 @@ Deno.test("shellQuote survives embedded quotes", () => {
   assertEquals(shellQuote("a'b"), "'a'\\''b'");
 });
 
-Deno.test("buildRequesterArgs pins the oauth session and default policy", () => {
-  const args = buildRequesterArgs({
-    requesterPath: "/repo/request-vm-ssh/mod.ts",
-    sessionPath: "/tmp/lease/session.json",
-    accountDid: "did:plc:a",
-    policy: "tangled-vouch",
-    policyArgs: { firstFree: true },
-    execCommand: "echo hi",
-    vmReadyTimeoutSec: 42,
-  });
-  assertEquals(args, [
-    "run", "-A", "/repo/request-vm-ssh/mod.ts",
-    "--atproto-oauth-qr", "--atproto-handle", "did:plc:a",
-    "--oauth-session-file", "/tmp/lease/session.json",
-    "--skip-qr",
-    "--policy", "tangled-vouch",
-    "--policy-args", '{"firstFree":true}',
-    "--vm-ready-timeout-sec", "42",
-    "--exec", "echo hi",
-  ]);
-});
-
-Deno.test("requesterArgsFromEnv maps only the documented LC_ knobs", () => {
-  assertEquals(requesterArgsFromEnv({}), []);
-  assertEquals(requesterArgsFromEnv({ LC_VM_NAME: "box" }), ["--vm-name", "box"]);
-  assertEquals(requesterArgsFromEnv({ LC_VM_NAME: "compute-a1b2.c3_d4" }), ["--vm-name", "compute-a1b2.c3_d4"]);
-  assertEquals(requesterArgsFromEnv({ LC_OTHER: "x" }), []);
+Deno.test("vmNameFromEnv accepts only a DNS-label-shaped name", () => {
+  assertEquals(vmNameFromEnv({}), undefined);
+  assertEquals(vmNameFromEnv({ LC_VM_NAME: "box" }), "box");
+  assertEquals(vmNameFromEnv({ LC_VM_NAME: "compute-a1b2.c3_d4" }), "compute-a1b2.c3_d4");
+  assertEquals(vmNameFromEnv({ LC_OTHER: "x" }), undefined);
 });
 
 Deno.test("LC_VM_NAME cannot carry anything into the cloud-init template", () => {
@@ -121,10 +98,13 @@ Deno.test("LC_VM_NAME cannot carry anything into the cloud-init template", () =>
     "x".repeat(64),
     "",
   ]) {
-    assertThrows(() => requesterArgsFromEnv({ LC_VM_NAME: value }), Error, "must match", `accepted ${JSON.stringify(value)}`);
+    assertThrows(() => vmNameFromEnv({ LC_VM_NAME: value }), Error, "must match", `accepted ${JSON.stringify(value)}`);
   }
 });
 
-Deno.test("LC_SECRETS is refused because it names a file on the SSH host", () => {
-  assertThrows(() => requesterArgsFromEnv({ LC_SECRETS: "/etc/shadow" }), Error, "not accepted from clients");
+Deno.test("LC_SECRETS reaches nothing, because there is no child to pass it to", () => {
+  // It used to name a file the spawned requester would read off this host. With
+  // the requester in-process there is no argv to carry it, so a client setting
+  // it has no effect -- asserted so a future child cannot reintroduce the hole.
+  assertEquals(vmNameFromEnv({ LC_SECRETS: "/etc/shadow" }), undefined);
 });

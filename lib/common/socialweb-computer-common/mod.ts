@@ -14,8 +14,6 @@ export const LC_POLICY_BID_WINDOW_SEC = "LC_POLICY_BID_WINDOW_SEC";
 export const LC_VM_NAME = "LC_VM_NAME";
 export const LC_SECRETS = "LC_SECRETS";
 
-export const DEFAULT_VM_READY_TIMEOUT_SEC = 300;
-
 /**
  * The portable OAuth session the rest of the polyrepo exchanges: what
  * qr.fedfork.com hands out, what hono-pds's session injector mints, and what
@@ -48,17 +46,6 @@ export interface AuthorizedAccount {
 export interface PolicySelection {
   policy: string;
   args: Record<string, unknown>;
-}
-
-export interface RequesterInvocation {
-  requesterPath: string;
-  sessionPath: string;
-  accountDid: string;
-  policy: string;
-  policyArgs: Record<string, unknown>;
-  execCommand: string;
-  vmReadyTimeoutSec?: number;
-  extraArgs?: string[];
 }
 
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -141,42 +128,17 @@ export function renderExecCommand(command: string, env: Record<string, string>):
   return `export ${assignments}; ${command}`;
 }
 
-export function buildRequesterArgs(invocation: RequesterInvocation): string[] {
-  const args = [
-    "run",
-    "-A",
-    invocation.requesterPath,
-    "--atproto-oauth-qr",
-    "--atproto-handle",
-    invocation.accountDid,
-    "--oauth-session-file",
-    invocation.sessionPath,
-    "--skip-qr",
-    "--policy",
-    invocation.policy,
-    "--policy-args",
-    JSON.stringify(invocation.policyArgs),
-    "--vm-ready-timeout-sec",
-    String(invocation.vmReadyTimeoutSec ?? DEFAULT_VM_READY_TIMEOUT_SEC),
-    "--exec",
-    invocation.execCommand,
-  ];
-  return args.concat(invocation.extraArgs ?? []);
-}
-
 export const VM_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/;
 
-export function requesterArgsFromEnv(env: Record<string, string>): string[] {
-  const args: string[] = [];
+/**
+ * The guest name a client asked for. It reaches cloud-init, which is why it is
+ * restricted to a DNS-label shape rather than passed through.
+ */
+export function vmNameFromEnv(env: Record<string, string>): string | undefined {
   const vmName = env[LC_VM_NAME];
-  if (vmName !== undefined) {
-    if (!VM_NAME_PATTERN.test(vmName)) {
-      throw new Error(`${LC_VM_NAME} must match ${VM_NAME_PATTERN}`);
-    }
-    args.push("--vm-name", vmName);
+  if (vmName === undefined) return undefined;
+  if (!VM_NAME_PATTERN.test(vmName)) {
+    throw new Error(`${LC_VM_NAME} must match ${VM_NAME_PATTERN}`);
   }
-  if (env[LC_SECRETS] !== undefined) {
-    throw new Error(`${LC_SECRETS} names a file on the SSH host and is not accepted from clients`);
-  }
-  return args;
+  return vmName;
 }
