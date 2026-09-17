@@ -6,8 +6,7 @@ import { createStaticFilesApp, type StaticFileEvent } from "@publicdomainrelay/h
 import { SOCIALWEB_COMPUTER_SSH_OAUTH_SCOPE } from "@publicdomainrelay/oauth-scope";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
 import { createAtprotoSessionVerifier } from "@publicdomainrelay/socialweb-computer-oauth-atproto";
-import { createFileSessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
-import { createAccountSessions } from "@publicdomainrelay/socialweb-computer-account-sessions-atproto";
+import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import { createRequestVmSshRunner } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
 import { createWebFactory } from "@publicdomainrelay/hono-factory-socialweb-computer-oauth";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
@@ -29,14 +28,7 @@ await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
 const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`, {
   onCorrupt: ({ path, quarantine }) => logger.error("session_store_corrupt", { path, quarantine }),
 });
-// One owner per account: it refreshes, and every connection gets a copy it
-// never rotates. Refresh tokens are single-use, and on a production
-// authorization server a second refresher destroys the session outright.
-const sessions = createAccountSessions({
-  sessionStore,
-  clientId: options.oauthClientId as string | undefined,
-  log,
-});
+const sessions = createFsOAuthSessionSource({ sessionStore });
 
 const authorizer = createAtprotoKeyAuthorizer({
   plcDirectoryUrl: options.plcDirectoryUrl as string,
@@ -107,7 +99,6 @@ log("ready", { sshPort, httpPort: options.httpPort, webDir: options.webDir });
 
 async function shutdown(): Promise<void> {
   await ssh.shutdown();
-  await sessions.shutdown();
   serve.shutdown();
   Deno.exit(0);
 }

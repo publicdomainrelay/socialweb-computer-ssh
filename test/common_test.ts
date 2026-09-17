@@ -93,7 +93,7 @@ Deno.test("buildRequesterArgs pins the oauth session and default policy", () => 
     "run", "-A", "/repo/request-vm-ssh/mod.ts",
     "--atproto-oauth-qr", "--atproto-handle", "did:plc:a",
     "--oauth-session-file", "/tmp/lease/session.json",
-    "--skip-qr", "--oauth-lease",
+    "--skip-qr",
     "--policy", "tangled-vouch",
     "--policy-args", '{"firstFree":true}',
     "--vm-ready-timeout-sec", "42",

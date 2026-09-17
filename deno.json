@@ -5,7 +5,6 @@
     "./lib/abc/socialweb-computer",
     "./lib/socialweb-computer-atproto",
     "./lib/socialweb-computer-oauth-atproto",
-    "./lib/socialweb-computer-account-sessions-atproto",
     "./lib/socialweb-computer-oauth-session-fs",
     "./lib/socialweb-computer-request-vm-ssh",
     "./lib/hono-factory-socialweb-computer-oauth",

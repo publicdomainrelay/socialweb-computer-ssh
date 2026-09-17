@@ -3,8 +3,7 @@ import { Hono } from "@hono/hono";
 // @ts-types="npm:@types/ssh2@^1"
 import { Client, utils, type ClientChannel } from "ssh2";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
-import { createFileSessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
-import { createAccountSessions } from "@publicdomainrelay/socialweb-computer-account-sessions-atproto";
+import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import { createRequestVmSshRunner } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import { BADGE_BLUE_KEYS_NSID, splitSshPublicKey } from "@publicdomainrelay/socialweb-computer-common";
@@ -66,7 +65,7 @@ async function startHarness(records: Array<Record<string, unknown>>): Promise<Ha
 
   const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`);
   await sessionStore.set(ACCOUNT_DID, {
-    accessJwt: `${btoa('{"alg":"ES256"}').replace(/=+$/, "")}.${btoa(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + 3600 })).replace(/=+$/, "")}.sig`,
+    accessJwt: "access",
     refreshJwt: "refresh",
     userDid: ACCOUNT_DID,
     handle: "alice.test",
@@ -80,7 +79,7 @@ async function startHarness(records: Array<Record<string, unknown>>): Promise<Ha
     authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl: `http://127.0.0.1:${plc.port}`, cacheTtlMs: 0, negativeCacheTtlMs: 0 }),
     runner: createRequestVmSshRunner({
       requesterPath: STUB_REQUESTER,
-      sessions: createAccountSessions({ sessionStore }),
+      sessions: createFsOAuthSessionSource({ sessionStore }),
       denoExecutable: Deno.execPath(),
     }),
     defaultCommand: "bash",
@@ -193,7 +192,7 @@ Deno.test("ssh exec runs the requester with defaults and forwards LC_ env", asyn
     assertEquals(summary.policy, "tangled-vouch");
     assertEquals(summary.policyArgs, { firstFree: true });
     assertEquals(summary.exec, "export LC_MY_VAR='secret_value'; echo $LC_MY_VAR");
-    assertEquals(summary.session.accessJwt.endsWith(".sig"), true);
+    assertEquals(summary.session.accessJwt, "access");
     assertEquals(summary.session.userDid, ACCOUNT_DID);
     assertEquals(summary.lcEnv, {});
     assertEquals(summary.sessionPath.startsWith("/"), true);

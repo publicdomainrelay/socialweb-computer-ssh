@@ -1,6 +1,7 @@
 import { createFactory } from "@hono/hono/factory";
-import type { SessionStore, SessionVerifier } from "@publicdomainrelay/socialweb-computer-abc";
+import type { SessionVerifier } from "@publicdomainrelay/socialweb-computer-abc";
 import type { OAuthSessionData } from "@publicdomainrelay/socialweb-computer-common";
+import type { SessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 
 export interface WebFactoryOptions {
   sessionStore: SessionStore;

@@ -152,7 +152,6 @@ export function buildRequesterArgs(invocation: RequesterInvocation): string[] {
     "--oauth-session-file",
     invocation.sessionPath,
     "--skip-qr",
-    "--oauth-lease",
     "--policy",
     invocation.policy,
     "--policy-args",

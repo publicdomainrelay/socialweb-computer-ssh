@@ -1,4 +1,4 @@
-import type { AccountSessions, CommandIo, ComputeCommandRunner } from "@publicdomainrelay/socialweb-computer-abc";
+import type { CommandIo, ComputeCommandRunner, OAuthSessionSource } from "@publicdomainrelay/socialweb-computer-abc";
 import {
   buildRequesterArgs,
   policyFromEnv,
@@ -9,7 +9,7 @@ import {
 
 export interface RequestVmSshRunnerOptions {
   requesterPath: string;
-  sessions: AccountSessions;
+  sessions: OAuthSessionSource;
   denoExecutable?: string;
   vmReadyTimeoutSec?: number;
   sessionMaxSec?: number;
@@ -69,14 +69,7 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Reque
       const execCommand = renderExecCommand(command, env);
       const extraArgs = requesterArgsFromEnv(env).concat(opts.extraArgs ?? []);
 
-      // A copy, not a lock: the owner mints it and every connection gets its
-      // own. Nothing here writes back -- a child must never be able to rotate
-      // the account's refresh token, because a second rotation is fatal.
-      const leaseDir = await Deno.makeTempDir({ prefix: "socialweb-computer-lease-" });
-      await Deno.chmod(leaseDir, 0o700).catch(() => {});
-      const sessionPath = `${leaseDir}/session.json`;
-      await opts.sessions.lease(account.did, sessionPath);
-      try {
+      await opts.sessions.withSessionFor(account.did, async ({ sessionPath }) => {
         const childEnv: Record<string, string> = {};
         const hostEnv = Deno.env.toObject();
         for (const name of CHILD_ENV_ALLOWLIST) {
@@ -171,10 +164,7 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Reque
           if (deadline !== null) clearTimeout(deadline);
           inFlight.delete(child);
         }
-      } finally {
-        opts.sessions.release(sessionPath);
-        await Deno.remove(leaseDir, { recursive: true }).catch(() => {});
-      }
+      });
     },
 
     async shutdown(): Promise<void> {

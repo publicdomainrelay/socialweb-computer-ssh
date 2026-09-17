@@ -32,8 +32,7 @@ import { createContainerBackend } from "@publicdomainrelay/container-backend-con
 import { createDockerBackend } from "@publicdomainrelay/container-backend-docker";
 import { generateLocalhostTlsCert } from "@publicdomainrelay/tls-localhost";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
-import { createFileSessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
-import { createAccountSessions } from "@publicdomainrelay/socialweb-computer-account-sessions-atproto";
+import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import { createRequestVmSshRunner } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import { BADGE_BLUE_KEYS_NSID, splitSshPublicKey } from "@publicdomainrelay/socialweb-computer-common";
@@ -351,7 +350,7 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
       authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl }),
       runner: createRequestVmSshRunner({
         requesterPath: `${ORG}/atproto-market/request-vm-ssh/mod.ts`,
-        sessions: createAccountSessions({ sessionStore }),
+        sessions: createFsOAuthSessionSource({ sessionStore }),
         vmReadyTimeoutSec: 180,
         extraArgs: [
           "--firehose-mode", "subscriberepos",

@@ -21,35 +21,12 @@ export interface ComputeCommandRunner {
   ): Promise<void>;
 }
 
-/** Durable per-account storage of the portable OAuth session. */
-export interface SessionStore {
-  get(did: string): Promise<OAuthSessionData | undefined>;
-  set(did: string, session: OAuthSessionData): Promise<void>;
-  del(did: string): Promise<void>;
-  list(): Promise<string[]>;
-  /** Serialize operations for one account; different accounts run concurrently. */
-  withAccount<T>(did: string, fn: () => Promise<T>): Promise<T>;
+export interface SessionLease {
+  sessionPath: string;
 }
 
-/**
- * Hands out a session one connection can use.
- *
- * One sign-in serves every key on an account, so a lease is a *copy* the
- * caller may use freely -- it is not a lock. The owner is the only thing that
- * refreshes: refresh tokens are single-use, and on a production authorization
- * server replaying one destroys the whole session, so a second refresher is
- * not a slow path, it is an outage.
- */
-export interface AccountSessions {
-  /**
-   * Write a session to `leasePath` for one connection, and keep it current for
-   * as long as that lease lives. The owner writes the file, not the caller, so
-   * it can refresh the token underneath a run that outlives it.
-   */
-  lease(did: string, leasePath: string): Promise<void>;
-  /** The lease is over; stop maintaining its file. */
-  release(leasePath: string): void;
-  shutdown(): Promise<void>;
+export interface OAuthSessionSource {
+  withSessionFor<T>(did: string, fn: (lease: SessionLease) => Promise<T>): Promise<T>;
 }
 
 export interface VerifiedSession {
