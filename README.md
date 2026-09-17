@@ -248,12 +248,17 @@ docker elsewhere) and skips loudly without one. It runs the ephemeral
 atproto-relay in-process, which needs `--unstable-kv` — hence the separate
 task rather than a plain file in `test/`.
 
-`.github/workflows/test.yml` is the gate: type-check, the generated scope check,
-and the 47 fast tests. `.github/workflows/live.yml` runs the live test on a
-schedule and on demand, and **does not gate** — on x86_64-linux its bidder
-subprocess dies in `@atproto/identity`'s fetch layer with `Unicast SSRF
-protection requires Node.js 20.6+`, a dependency incompatibility outside this
-repo. It passes on darwin.
+`.github/workflows/test.yml` runs on every push and pull request: the generated
+scope check, a type-check, and the fast tests. `.github/workflows/live.yml` runs
+the live end-to-end on a schedule and on demand, provisioning a real guest on a
+GitHub runner.
+
+The live job needs `test/fixtures/undici-shim.ts` preloaded. `@atproto-labs/fetch-node`
+guards its SSRF protection by reading `process.versions.undici`, which Deno does
+not emulate, so the guard rejects the runtime outright on the Linux path that
+dependency version takes. Deno's fetch is not undici, so the question is
+inapplicable rather than unmet; the shim supplies the field and nothing in the
+service depends on it.
 
 ## Status
 

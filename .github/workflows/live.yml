@@ -22,8 +22,6 @@ env:
 
 jobs:
   live:
-    name: Live market (does not gate)
-    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     defaults:
