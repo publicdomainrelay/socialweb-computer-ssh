@@ -13,9 +13,16 @@ import type { CommandIo } from "@publicdomainrelay/socialweb-computer-abc";
  * the ProxyCommand string, and ensureWebsocat -- which mutates the process PATH,
  * a bug in a server running concurrent work.
  */
-function tunnelStream(url: string): Duplex {
+async function tunnelStream(url: string): Promise<Duplex> {
   const ws = new WebSocket(url);
   ws.binaryType = "arraybuffer";
+  // ssh2 writes the client banner immediately on connect, so the socket has to
+  // be OPEN before it is handed over -- otherwise the first writes throw
+  // InvalidStateError and the handshake never starts.
+  await new Promise<void>((resolve, reject) => {
+    ws.addEventListener("open", () => resolve(), { once: true });
+    ws.addEventListener("error", () => reject(new Error(`tunnel websocket to ${url} failed`)), { once: true });
+  });
   const stream = new Duplex({
     read() { /* push happens from the socket */ },
     write(chunk: Uint8Array, _encoding, cb) {
@@ -40,6 +47,7 @@ function tunnelStream(url: string): Duplex {
 }
 
 async function connect(fqdn: string, privateKey: string, timeoutMs: number): Promise<Client> {
+  const sock = await tunnelStream(tunnelWsUrl(fqdn));
   const client = new Client();
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("tunnel connect timed out")), timeoutMs);
@@ -53,7 +61,7 @@ async function connect(fqdn: string, privateKey: string, timeoutMs: number): Pro
         reject(err);
       })
       .connect({
-        sock: tunnelStream(tunnelWsUrl(fqdn)),
+        sock,
         username: "root",
         privateKey,
         // The trust anchor is the tunnel registration, not the guest's host key.

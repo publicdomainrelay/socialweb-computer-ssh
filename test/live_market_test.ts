@@ -44,6 +44,9 @@ const VOUCH_NSID = "sh.tangled.graph.vouch";
 const log = createLogger({ serviceName: "swc-live" });
 
 Deno.env.set("ATPROTO_DID", "");
+// The policy engine filters its step output at Trace; without this the policy's
+// own allow/violations reasoning never reaches the log.
+Deno.env.set("POLICY_ENGINE_LOG_LEVEL", "trace");
 
 function serveOnPort0(
   f: (r: Request) => Response | Promise<Response>,
@@ -272,11 +275,33 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     await createRecordDpop(pdsUrl, bidderInj.sessionData, bidderAcct.did, VOUCH_NSID, requesterAcct.did, vouch(requesterAcct.did));
     await createRecordDpop(pdsUrl, requesterInj.sessionData, requesterAcct.did, VOUCH_NSID, bidderAcct.did, vouch(bidderAcct.did));
 
+    const vouchCheck = await fetch(
+      `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(requesterAcct.did)}&collection=${encodeURIComponent(VOUCH_NSID)}`,
+    ).then((r) => r.json() as Promise<{ records?: unknown[] }>);
+    log.info("vouch_records_on_pds", {
+      requester: requesterAcct.did,
+      count: vouchCheck.records?.length ?? -1,
+    });
+
     // The association this repo's SSH door authenticates against: the account's
     // own badgeBlueKeys record of service requester_associate whose keyId is the
     // OpenSSH public key.
     const sshKey = generateSshKey();
     const pub = splitSshPublicKey(sshKey.public)!;
+    // Two records, because two different readers use this collection.
+    // Operator discovery resolves a subject's operator from a record whose
+    // keyId IS that subject's DID -- without it the vouch graph is empty and
+    // tangled-vouch denies every bid. The SSH door needs the key material.
+    await createRecordDpop(pdsUrl, requesterInj.sessionData, requesterAcct.did, BADGE_BLUE_KEYS_NSID,
+      crypto.randomUUID().replace(/-/g, "").slice(0, 13), {
+        $type: BADGE_BLUE_KEYS_NSID,
+        keyId: bidderAcct.did,
+        name: "operator-association",
+        challenge: requesterAcct.did,
+        service: "requester_associate",
+        createdAt: new Date().toISOString(),
+      });
+
     await createRecordDpop(pdsUrl, requesterInj.sessionData, requesterAcct.did, BADGE_BLUE_KEYS_NSID,
       crypto.randomUUID().replace(/-/g, "").slice(0, 13), {
         $type: BADGE_BLUE_KEYS_NSID,

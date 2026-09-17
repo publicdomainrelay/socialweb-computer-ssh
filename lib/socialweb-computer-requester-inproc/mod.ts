@@ -122,8 +122,10 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
           plcDirectoryUrl: plcUrl,
           ingressProxyHost: opts.ingressProxyHost,
           label: "socialweb-computer-ssh",
-          skipIngress: true,
         });
+        // The requester's own repo has to be reachable: the fulfillment policy
+        // reads records back through its ingress while deciding.
+        await pds.beginServe();
         applyOAuthAgentToRequesterPDS(pds, agent as never, { log });
 
         eventStreams = createDefaultATProtoEventStreamsClient({
