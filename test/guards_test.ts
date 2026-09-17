@@ -1,6 +1,5 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { fetchGuarded, isPrivateAddress, resolvesToPublicAddress } from "@publicdomainrelay/socialweb-computer-atproto";
-import { isLogLine } from "@publicdomainrelay/socialweb-computer-request-vm-ssh";
 import { requesterArgsFromEnv } from "@publicdomainrelay/socialweb-computer-common";
 
 Deno.test("private and special addresses are recognised", () => {
@@ -42,17 +41,9 @@ Deno.test("fetchGuarded refuses a redirect rather than following it", async () =
   }
 });
 
-Deno.test("requester log lines are told apart from guest output", () => {
-  assertEquals(isLogLine('{"ts":"2026-01-01T00:00:00.000Z","level":"info","message":"x"}'), true);
-  assertEquals(isLogLine("plain command output"), false);
-  assertEquals(isLogLine('{"argv":["run"],"exec":"echo hi"}'), false);
-  assertEquals(isLogLine('{"ts":"now","level":"info"}'), false);
-  assertEquals(isLogLine("{ not json"), false);
-});
-
-Deno.test("the door's environment is not handed to the client's requester", () => {
-  // These configure request-vm-ssh through its own env fallback; a client must
-  // not be able to reach them, and LC_KEEP_VM is gone entirely.
+Deno.test("client env cannot reach the host's own configuration", () => {
+  // In-process there is no child environment to leak into, but these must still
+  // not be accepted from a client as options.
   assertEquals(requesterArgsFromEnv({ LC_KEEP_VM: "1" }), []);
   assertEquals(requesterArgsFromEnv({ SECRETS_FILE: "/secrets.json" }), []);
   assertEquals(requesterArgsFromEnv({ SSH_AUTHORIZED_KEY: "ssh-ed25519 AAAA" }), []);

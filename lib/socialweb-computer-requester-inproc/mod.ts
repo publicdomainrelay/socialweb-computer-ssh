@@ -8,7 +8,7 @@ import type { SessionStore } from "@publicdomainrelay/socialweb-computer-oauth-s
 import type { CommandIo, ComputeCommandRunner } from "@publicdomainrelay/socialweb-computer-abc";
 import type { AuthorizedAccount } from "@publicdomainrelay/socialweb-computer-common";
 import { policyFromEnv, renderExecCommand, requesterArgsFromEnv } from "@publicdomainrelay/socialweb-computer-common";
-import { runSessionOverChannel } from "./bridge.ts";
+import { pollGuestReady, runSessionOverTunnel } from "./bridge.ts";
 
 export interface InProcessRequesterOptions {
   sessionStore: SessionStore;
@@ -115,12 +115,13 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
   }
 
   function providerFor(io: CommandIo): SshSessionProvider {
+    // Only the keypair still comes from the shipped provider; the session and
+    // the readiness poll are in-process over the guest's tunnel.
     const inner = createSshSessionProvider(undefined);
     return {
       generateKeypair: (vmName) => inner.generateKeypair(vmName),
-      pollReady: (privateKeyPath, fqdn, timeoutMs) => inner.pollReady(privateKeyPath, fqdn, timeoutMs),
-      runSession: (privateKeyPath, fqdn, program) =>
-        runSessionOverChannel(privateKeyPath, fqdn, program, io, log),
+      pollReady: (privateKeyPath, fqdn, timeoutMs) => pollGuestReady(privateKeyPath, fqdn, timeoutMs, log),
+      runSession: (privateKeyPath, fqdn, program) => runSessionOverTunnel(privateKeyPath, fqdn, program, io, log),
     };
   }
 

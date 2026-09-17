@@ -7,7 +7,6 @@
     "./lib/socialweb-computer-oauth-atproto",
     "./lib/socialweb-computer-oauth-session-fs",
     "./lib/socialweb-computer-requester-inproc",
-    "./lib/socialweb-computer-request-vm-ssh",
     "./lib/hono-factory-socialweb-computer-oauth",
     "./lib/socialweb-computer-ssh-ssh2",
     "./hono-socialweb-computer-ssh"
