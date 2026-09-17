@@ -98,9 +98,21 @@ that store's DPoP entry is a live key object with no `toJSON`, so it does not
 survive a JSON round-trip and cannot be restored from a file. The portable
 form has no such problem — its DPoP key is a JWK that both sides can import.
 
-`request-vm-ssh` rotates the refresh token on use, so the lease copies the file
-back into the store before the temporary directory is removed. Concurrent
-connections for the same account are serialized by the store.
+One sign-in serves every key on an account, and **the server is the only thing
+that refreshes**. Each connection gets a *copy* -- the lease carries no refresh
+token -- and the child is run in a mode that forbids local rotation, disables the
+proactive-refresh keepalive, and fails cleanly rather than falling back to an
+interactive QR prompt.
+
+That is not tidiness. Refresh tokens are single-use, and on a production
+authorization server replaying one **deletes the account's session** rather than
+just failing, so a second rotator is an outage. Connections for one account run
+in parallel; the only thing serialized is the check-and-refresh itself, which is
+why it takes milliseconds rather than the length of a provisioning run.
+
+The bound: a run must finish inside its access token's remaining life (about 15
+minutes). A run that outlives it fails with a distinct error rather than hanging.
+Lifting that needs a refresh channel back to the owner.
 
 An SSH client that disconnects mid-provision is *not* killed: the requester runs
 to completion, its command writes into a closed channel, and it still submits
@@ -221,7 +233,8 @@ lib/common/socialweb-computer-common       wire types, LC_ parsing, requester ar
 lib/abc/socialweb-computer                KeyAuthorizer / ComputeCommandRunner / OAuthSessionSource
 lib/socialweb-computer-atproto            badgeBlueKeys lookup over a PDS
 lib/socialweb-computer-oauth-atproto      server-side AT Protocol OAuth client
-lib/socialweb-computer-oauth-session-fs   session store + tempdir lease
+lib/socialweb-computer-account-sessions-atproto  one owner per account: lease + refresh
+lib/socialweb-computer-oauth-session-fs   durable session store
 lib/socialweb-computer-request-vm-ssh     spawns request-vm-ssh per connection
 lib/hono-factory-socialweb-computer-oauth Hono app: login, callback, key registry
 lib/socialweb-computer-ssh-ssh2           ssh2 server binding
@@ -239,7 +252,7 @@ deno task test:live   # provisions a real VM; needs a container runtime
 |---|---|
 | `test/ssh_flow_test.ts` | Fake PLC + PDS, a real `requester_associate` record, a real SSH connection, and a real subprocess spawn. An associated key is accepted, unassociated keys are rejected, `LC_` variables reach the requester's argv and the guest command, and the requester's exit code survives the trip back. |
 | `test/ssh_auth_test.ts` | Signature verification: a valid signature passes, a signature over another blob, another key's signature, garbage, a missing blob, and an unparseable key are all refused; a probe with no signature passes. |
-| `test/session_lease_test.ts` | The tempdir handoff: one account's session in, rotated tokens back, temporary directory removed on success and on failure, a failed requester still keeping a rotated token, two leases for one account serializing, an unreadable store erroring rather than reading as empty, and the store written `0600`. |
+| `test/account_sessions_test.ts` | The lease: a valid token is handed out without touching the network, an expiring one is refreshed exactly once for four concurrent leases, leases for one account do not queue, a lease carries no refresh token while the owner keeps the real one, and the store is written `0600` with a corrupt file quarantined rather than silently emptied. |
 | `test/oauth_web_test.ts` | Login redirect, callback cookie, key registration as a `requester_associate` record, malformed keys, delete, and rejection of unsigned, tampered, or foreign-signed cookies. |
 | `test/requester_contract_test.ts` | Every flag this repo emits is still declared by `request-vm-ssh`'s option table. |
 | `test/common_test.ts` | `LC_` parsing, policy defaults, SSH key comparison, requester argv. |
