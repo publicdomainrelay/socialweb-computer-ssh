@@ -357,6 +357,7 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
         plcDirectoryUrl,
         ingressProxyHost,
         relayUrls: [relayUrl],
+        guestHostAliases: [`${gateway} relay.localhost`],
         vmReadyTimeoutSec: 180,
         log: (event, data) => log.info(event, data ?? {}),
       }),

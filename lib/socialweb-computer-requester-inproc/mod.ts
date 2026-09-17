@@ -26,6 +26,14 @@ export interface InProcessRequesterOptions {
   ingressProxyHost?: string;
   relayUrls?: string[];
   vmReadyTimeoutSec?: number;
+  /** /etc/hosts entries the guest needs to reach this dispatcher. */
+  guestHostAliases?: string[];
+  /**
+   * Write the com.fedproxy.rbac record that authorizes the guest's ssh host
+   * key. Off by default: this app's OAuth scope grants badgeBlueKeys only, so
+   * the write would be refused. Turning it on means widening the scope.
+   */
+  rbac?: boolean;
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
@@ -132,7 +140,8 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
           vmReadyTimeoutSec: opts.vmReadyTimeoutSec,
           sshProvider: providerFor(io),
           policy: { name: policy, args: policyArgs },
-          rbac: true,
+          guestHostAliases: opts.guestHostAliases,
+          rbac: opts.rbac ?? false,
           logger,
         });
 
