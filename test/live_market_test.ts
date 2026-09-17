@@ -42,6 +42,8 @@ import { installFetchInterceptor } from "../../atproto-market/test/fetch-interce
 const ORG = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
 const VOUCH_NSID = "sh.tangled.graph.vouch";
 const log = createLogger({ serviceName: "swc-live" });
+// The bidder is a separate process, so it needs the same preload the test does.
+const UNDICI_SHIM = new URL("./fixtures/undici-shim.ts", import.meta.url).pathname;
 
 Deno.env.set("ATPROTO_DID", "");
 // The policy engine filters its step output at Trace; without this the policy's
@@ -318,7 +320,7 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     await Deno.writeTextFile(bidderSessionFile, JSON.stringify(bidderInj.sessionData, null, 2));
     bidderChild = new Deno.Command("deno", {
       args: [
-        "run", "-A", "--unstable-kv", `${ORG}/atproto-market/hono-bidder/mod.ts`,
+        "run", "-A", "--unstable-kv", `--import=${UNDICI_SHIM}`, `${ORG}/atproto-market/hono-bidder/mod.ts`,
         "--atproto-oauth-qr", "--oauth-session-file", bidderSessionFile,
         "--atproto-handle", "bidder", "--skip-qr",
         "--firehose-mode", "subscriberepos",
