@@ -50,11 +50,18 @@ if (options.oauthClientId) {
 const relayUrls = ((options.relayUrl as string) || "")
   .split(",").map((s) => s.trim()).filter(Boolean);
 
+const serve = createServe({
+  logger,
+  tcp: { addr: options.serveAddr as string, port: options.httpPort as number },
+});
+// The API is registered first so /session and the metadata document never reach
+// the static handler; everything else falls through to the SPA.
 // In-process: one agent per account owns the session, so concurrent
 // connections share a refresh lock instead of racing a single-use token.
 const runner = createInProcessRequester({
   sessionStore,
-  attestationKeyPath: `${stateDir}/attestation-key`,
+  requesterKeyPath: `${stateDir}/requester-private-key`,
+  serve,
   plcDirectoryUrl: options.plcDirectoryUrl as string,
   ingressProxyHost: options.ingressProxyHost as string,
   relayUrls,
@@ -90,12 +97,6 @@ bus.subscribe((event) => {
 });
 const staticApp = createStaticFilesApp(options.webDir as string, createStructuredLogger("web", getMinLogLevelFromEnv()), bus);
 
-const serve = createServe({
-  logger,
-  tcp: { addr: options.serveAddr as string, port: options.httpPort as number },
-});
-// The API is registered first so /session and the metadata document never reach
-// the static handler; everything else falls through to the SPA.
 serve.app.route("/", web.createApp());
 serve.app.route("/", staticApp as never);
 

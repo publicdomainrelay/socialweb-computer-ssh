@@ -34,6 +34,7 @@ import { generateLocalhostTlsCert } from "@publicdomainrelay/tls-localhost";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
 import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import { createInProcessRequester } from "@publicdomainrelay/socialweb-computer-requester-inproc";
+import { createServe } from "@publicdomainrelay/serve";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import { BADGE_BLUE_KEYS_NSID, splitSshPublicKey } from "@publicdomainrelay/socialweb-computer-common";
 import { installFetchInterceptor } from "../../atproto-market/test/fetch-interceptor.ts";
@@ -345,12 +346,14 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`);
     await sessionStore.set(requesterAcct.did, requesterInj.sessionData as never);
 
+    const serve = createServe({ logger: log });
     const ssh = createSshServer({
       config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key` },
       authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl }),
       runner: createInProcessRequester({
         sessionStore,
-        attestationKeyPath: `${stateDir}/attestation-key`,
+        requesterKeyPath: `${stateDir}/requester-private-key`,
+        serve,
         plcDirectoryUrl,
         ingressProxyHost,
         relayUrls: [relayUrl],
