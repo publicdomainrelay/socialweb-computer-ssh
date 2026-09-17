@@ -72,11 +72,10 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Reque
       // A copy, not a lock: the owner mints it and every connection gets its
       // own. Nothing here writes back -- a child must never be able to rotate
       // the account's refresh token, because a second rotation is fatal.
-      const session = await opts.sessions.lease(account.did);
       const leaseDir = await Deno.makeTempDir({ prefix: "socialweb-computer-lease-" });
       await Deno.chmod(leaseDir, 0o700).catch(() => {});
       const sessionPath = `${leaseDir}/session.json`;
-      await Deno.writeTextFile(sessionPath, JSON.stringify(session, null, 2), { mode: 0o600 });
+      await opts.sessions.lease(account.did, sessionPath);
       try {
         const childEnv: Record<string, string> = {};
         const hostEnv = Deno.env.toObject();
@@ -173,6 +172,7 @@ export function createRequestVmSshRunner(opts: RequestVmSshRunnerOptions): Reque
           inFlight.delete(child);
         }
       } finally {
+        opts.sessions.release(sessionPath);
         await Deno.remove(leaseDir, { recursive: true }).catch(() => {});
       }
     },

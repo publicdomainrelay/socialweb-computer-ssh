@@ -110,9 +110,12 @@ just failing, so a second rotator is an outage. Connections for one account run
 in parallel; the only thing serialized is the check-and-refresh itself, which is
 why it takes milliseconds rather than the length of a provisioning run.
 
-The bound: a run must finish inside its access token's remaining life (about 15
-minutes). A run that outlives it fails with a distinct error rather than hanging.
-Lifting that needs a refresh channel back to the owner.
+A run that outlives its access token does not die: the child leaves a request
+file beside its lease and the owner writes a fresh token into it — a request, not
+a refresh, so the owner is still the only rotator. If the owner is gone the wait
+times out and the run fails with a distinct error, which is the tear-down
+behaviour: an SSH-server restart ends in-flight runs rather than orphaning them.
+Opting into survival across a restart is not implemented.
 
 An SSH client that disconnects mid-provision is *not* killed: the requester runs
 to completion, its command writes into a closed channel, and it still submits

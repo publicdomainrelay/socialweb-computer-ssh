@@ -14,6 +14,14 @@ export interface AccountSessionsOptions {
 const DEFAULT_MARGIN_MS = 120_000;
 
 /**
+ * A running child that outlives its access token leaves this next to its lease.
+ * A file, not a socket: both processes are on one host, the directory is already
+ * 0700 and the lease 0600, and it needs no listener, no port and no secret.
+ */
+const REFRESH_REQUEST_SUFFIX = ".refresh-request";
+const SWEEP_INTERVAL_MS = 1_000;
+
+/**
  * The single owner of each account's OAuth session.
  *
  * Every SSH connection used to take the session under a per-account lock held
@@ -29,19 +37,58 @@ const DEFAULT_MARGIN_MS = 120_000;
 export function createAccountSessions(opts: AccountSessionsOptions): AccountSessions {
   const marginMs = opts.refreshMarginMs ?? DEFAULT_MARGIN_MS;
   const log = opts.log ?? (() => {});
+  const leases = new Map<string, { did: string; path: string }>();
+  let sweeping: Promise<void> | null = null;
+
+  async function writeLease(path: string, session: OAuthSessionData): Promise<void> {
+    await Deno.writeTextFile(path, JSON.stringify({ ...session, refreshJwt: "" }, null, 2), { mode: 0o600 });
+  }
 
   /**
-   * Held only around the check-and-maybe-refresh, never around a run. Serialized
-   * per account so a second caller cannot pass the freshness check against a
-   * token the first is about to rotate.
+   * Serve any child that asked for a token. One refresh per account, then every
+   * live lease for it is rewritten -- a refresh invalidates the siblings' access
+   * tokens on a production authorization server, so they all need the new one.
    */
-  async function freshSession(did: string): Promise<OAuthSessionData> {
+  async function sweep(): Promise<void> {
+    for (const [did, entries] of groupByDid()) {
+      const asked = entries.some((e) => existsSync(`${e.path}${REFRESH_REQUEST_SUFFIX}`));
+      if (!asked) continue;
+      for (const e of entries) await Deno.remove(`${e.path}${REFRESH_REQUEST_SUFFIX}`).catch(() => {});
+      try {
+        const session = await opts.sessionStore.withAccount(did, () => refreshNow(did));
+        for (const e of entries) await writeLease(e.path, session);
+        log("lease_refreshed_on_request", { did, leases: entries.length });
+      } catch (err) {
+        // Leave the request files absent: the child times out and fails its run
+        // rather than waiting forever for a token that is not coming.
+        log("lease_refresh_failed", { did, error: String(err) });
+      }
+    }
+  }
+
+  function groupByDid(): Map<string, Array<{ did: string; path: string }>> {
+    const grouped = new Map<string, Array<{ did: string; path: string }>>();
+    for (const entry of leases.values()) {
+      const list = grouped.get(entry.did) ?? [];
+      list.push(entry);
+      grouped.set(entry.did, list);
+    }
+    return grouped;
+  }
+
+  function existsSync(path: string): boolean {
+    try {
+      Deno.statSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Refresh unconditionally, and persist: the caller holds the account lock. */
+  async function refreshNow(did: string): Promise<OAuthSessionData> {
     const stored = await opts.sessionStore.get(did);
     if (!stored) throw new Error(`no oauth session stored for ${did}`);
-
-    const exp = decodeJwtExp(stored.accessJwt);
-    if (exp !== null && exp - Date.now() > marginMs) return stored;
-
     let updated = stored;
     const agent = await createOAuthAgentFromSession(stored, {
       clientId: opts.clientId,
@@ -59,21 +106,41 @@ export function createAccountSessions(opts: AccountSessionsOptions): AccountSess
     return updated;
   }
 
+  const timer = setInterval(() => {
+    if (sweeping) return;
+    sweeping = sweep().catch(() => {}).finally(() => {
+      sweeping = null;
+    });
+  }, SWEEP_INTERVAL_MS);
+  Deno.unrefTimer?.(timer);
+
+  /**
+   * Held only around the check-and-maybe-refresh, never around a run. Serialized
+   * per account so a second caller cannot pass the freshness check against a
+   * token the first is about to rotate.
+   */
+  async function freshSession(did: string): Promise<OAuthSessionData> {
+    const stored = await opts.sessionStore.get(did);
+    if (!stored) throw new Error(`no oauth session stored for ${did}`);
+
+    const exp = decodeJwtExp(stored.accessJwt);
+    if (exp !== null && exp - Date.now() > marginMs) return stored;
+    return await refreshNow(did);
+  }
+
   return {
-    /**
-     * The lease deliberately carries no refresh token. The child is told it may
-     * not refresh, but a copy that *could* would be one bad code path away from
-     * a second rotation -- which on a production authorization server deletes
-     * the account's session outright.
-     */
-    lease: async (did) => {
+    async lease(did, leasePath) {
       const session = await opts.sessionStore.withAccount(did, () => freshSession(did));
-      return { ...session, refreshJwt: "" };
+      await writeLease(leasePath, session);
+      leases.set(leasePath, { did, path: leasePath });
+    },
+
+    release(leasePath) {
+      leases.delete(leasePath);
     },
 
     async shutdown() {
-      // Refresh agents are built per refresh and disposed immediately, so there
-      // is nothing long-lived to release. Kept for the interface contract.
+      clearInterval(timer);
     },
   };
 }

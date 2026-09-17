@@ -41,8 +41,14 @@ export interface SessionStore {
  * not a slow path, it is an outage.
  */
 export interface AccountSessions {
-  lease(did: string): Promise<OAuthSessionData>;
-  /** Release long-lived resources (refresh agents) at shutdown. */
+  /**
+   * Write a session to `leasePath` for one connection, and keep it current for
+   * as long as that lease lives. The owner writes the file, not the caller, so
+   * it can refresh the token underneath a run that outlives it.
+   */
+  lease(did: string, leasePath: string): Promise<void>;
+  /** The lease is over; stop maintaining its file. */
+  release(leasePath: string): void;
   shutdown(): Promise<void>;
 }
 

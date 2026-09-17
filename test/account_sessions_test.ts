@@ -76,12 +76,24 @@ async function harness(expiresInSec: number, pds: string) {
   return { path, store, dir, cleanup: () => Deno.remove(dir, { recursive: true }).catch(() => {}) };
 }
 
+/** Lease into a temp file the way the runner does, and read it back. */
+async function leaseInto(
+  sessions: ReturnType<typeof createAccountSessions>,
+  did: string,
+  n = 0,
+): Promise<OAuthSessionData> {
+  const dir = await Deno.makeTempDir({ prefix: "swc-lease-read-" });
+  const path = `${dir}/session-${n}.json`;
+  await sessions.lease(did, path);
+  return JSON.parse(await Deno.readTextFile(path)) as OAuthSessionData;
+}
+
 Deno.test("a lease of a still-valid token is handed out without touching the network", async () => {
   const as = await tokenEndpoint();
   const h = await harness(900, as.pds);
   try {
     const sessions = createAccountSessions({ sessionStore: h.store });
-    const leased = await sessions.lease(DID);
+    const leased = await leaseInto(sessions, DID);
     assertEquals(leased.userDid, DID);
     assertEquals(leased.accessJwt.includes("."), true);
     assertEquals(as.state.refreshes, 0, "a valid token must not be refreshed");
@@ -96,7 +108,7 @@ Deno.test("an about-to-expire token is refreshed exactly once for concurrent lea
   const h = await harness(30, as.pds);
   try {
     const sessions = createAccountSessions({ sessionStore: h.store });
-    const leased = await Promise.all([DID, DID, DID, DID].map(() => sessions.lease(DID)));
+    const leased = await Promise.all([0, 1, 2, 3].map((i) => leaseInto(sessions, DID, i)));
     assertEquals(as.state.refreshes, 1, "concurrent leases must coalesce into one refresh");
     assertEquals(new Set(leased.map((s) => s.accessJwt)).size, 1);
     // The refreshed session is what the store now holds.
@@ -113,7 +125,7 @@ Deno.test("leases for one account do not serialize against each other", async ()
   try {
     const sessions = createAccountSessions({ sessionStore: h.store });
     const started = Date.now();
-    const [a, b] = await Promise.all([sessions.lease(DID), sessions.lease(DID)]);
+    const [a, b] = await Promise.all([leaseInto(sessions, DID, 0), leaseInto(sessions, DID, 1)]);
     assertEquals(a.userDid, DID);
     assertEquals(b.userDid, DID);
     // The old design held a per-account lock for the whole provisioning run;
@@ -130,7 +142,7 @@ Deno.test("leases for different accounts do not clobber each other", async () =>
   const h = await harness(900, as.pds);
   try {
     const sessions = createAccountSessions({ sessionStore: h.store });
-    const [a, b] = await Promise.all([sessions.lease(DID), sessions.lease(OTHER)]);
+    const [a, b] = await Promise.all([leaseInto(sessions, DID, 0), leaseInto(sessions, OTHER, 1)]);
     assertEquals(a.userDid, DID);
     assertEquals(b.userDid, OTHER);
   } finally {
@@ -144,7 +156,7 @@ Deno.test("leasing an account with no stored session is an error", async () => {
   const h = await harness(900, as.pds);
   try {
     const sessions = createAccountSessions({ sessionStore: h.store });
-    await assertRejects(() => sessions.lease("did:plc:nobody"), Error, "no oauth session stored");
+    await assertRejects(() => leaseInto(sessions, "did:plc:nobody"), Error, "no oauth session stored");
   } finally {
     await h.cleanup();
     await as.close();
@@ -183,12 +195,52 @@ Deno.test("a lease carries no refresh token", async () => {
   const h = await harness(900, as.pds);
   try {
     const sessions = createAccountSessions({ sessionStore: h.store });
-    const leased = await sessions.lease(DID);
+    const leased = await leaseInto(sessions, DID);
     // The child is told it may not refresh; a lease that *could* would be one
     // bad code path from a second rotation, which destroys the session.
     assertEquals(leased.refreshJwt, "");
     // The owner keeps the real one.
     assertEquals((await h.store.get(DID))?.refreshJwt, "refresh");
+  } finally {
+    await h.cleanup();
+    await as.close();
+  }
+});
+
+Deno.test("a lease that asks for a token gets one, and its siblings get it too", async () => {
+  const as = await tokenEndpoint();
+  const h = await harness(900, as.pds);
+  try {
+    const sessions = createAccountSessions({ sessionStore: h.store });
+    const dir = await Deno.makeTempDir({ prefix: "swc-lease-run-" });
+    const first = `${dir}/a.json`;
+    const second = `${dir}/b.json`;
+    await sessions.lease(DID, first);
+    await sessions.lease(DID, second);
+    const before = JSON.parse(await Deno.readTextFile(first)).accessJwt;
+    assertEquals(as.state.refreshes, 0);
+
+    // What a child does when its token is rejected mid-run.
+    await Deno.writeTextFile(`${first}.refresh-request`, String(Date.now()));
+
+    const deadline = Date.now() + 15_000;
+    let after = before;
+    while (Date.now() < deadline && after === before) {
+      await new Promise((r) => setTimeout(r, 250));
+      after = JSON.parse(await Deno.readTextFile(first)).accessJwt;
+    }
+
+    assertEquals(as.state.refreshes, 1, "the owner must refresh once, not per lease");
+    assertEquals(after !== before, true, "the asking lease must be rewritten");
+    // A refresh kills the siblings' tokens on a production server, so they are
+    // rewritten too rather than left holding a dead one.
+    assertEquals(JSON.parse(await Deno.readTextFile(second)).accessJwt, after);
+    // And the lease still carries no refresh token.
+    assertEquals(JSON.parse(await Deno.readTextFile(first)).refreshJwt, "");
+    assertEquals((await h.store.get(DID))?.refreshJwt, "refresh-1");
+
+    sessions.release(first);
+    sessions.release(second);
   } finally {
     await h.cleanup();
     await as.close();
