@@ -1,16 +1,8 @@
-import type { OAuthSessionSource } from "@publicdomainrelay/socialweb-computer-abc";
+import type { SessionStore } from "@publicdomainrelay/socialweb-computer-abc";
 import type { OAuthSessionData } from "@publicdomainrelay/socialweb-computer-common";
 
 const FILE_MODE = 0o600;
 const DIR_MODE = 0o700;
-
-export interface SessionStore {
-  get(did: string): Promise<OAuthSessionData | undefined>;
-  set(did: string, session: OAuthSessionData): Promise<void>;
-  del(did: string): Promise<void>;
-  list(): Promise<string[]>;
-  withAccount<T>(did: string, fn: () => Promise<T>): Promise<T>;
-}
 
 export interface FileSessionStoreOptions {
   onCorrupt?: (info: { path: string; quarantine: string }) => void;
@@ -96,56 +88,6 @@ export function createFileSessionStore(filePath: string, opts: FileSessionStoreO
         if (locks.get(did) === chained) locks.delete(did);
       });
       return run;
-    },
-  };
-}
-
-export interface OAuthSessionSourceOptions {
-  sessionStore: SessionStore;
-  tempDirPrefix?: string;
-}
-
-export function createFsOAuthSessionSource(opts: OAuthSessionSourceOptions): OAuthSessionSource {
-  const prefix = opts.tempDirPrefix ?? "socialweb-computer-ssh-";
-
-  return {
-    async withSessionFor<T>(did: string, fn: (lease: { sessionPath: string }) => Promise<T>): Promise<T> {
-      return await opts.sessionStore.withAccount(did, async () => {
-        const dir = await Deno.makeTempDir({ prefix });
-        await Deno.chmod(dir, DIR_MODE).catch(() => {});
-        const sessionPath = `${dir}/session.json`;
-        try {
-          const stored = await opts.sessionStore.get(did);
-          if (!stored) throw new Error(`no oauth session stored for ${did}`);
-          await Deno.writeTextFile(sessionPath, JSON.stringify(stored, null, 2), { mode: FILE_MODE });
-
-          let result: T | undefined;
-          let failure: unknown;
-          try {
-            result = await fn({ sessionPath });
-          } catch (err) {
-            failure = err;
-          }
-
-          try {
-            const rotated = JSON.parse(await Deno.readTextFile(sessionPath)) as OAuthSessionData;
-            // The requester is a trusted sibling, but this is still the boundary
-            // where a value crosses back into the store -- it may only write the
-            // account it was leased for.
-            if (rotated?.userDid !== did) {
-              throw new Error(`requester returned a session for ${rotated?.userDid}, expected ${did}`);
-            }
-            await opts.sessionStore.set(did, rotated);
-          } catch (err) {
-            if (!failure) failure = err;
-          }
-
-          if (failure) throw failure;
-          return result as T;
-        } finally {
-          await Deno.remove(dir, { recursive: true }).catch(() => {});
-        }
-      });
     },
   };
 }
