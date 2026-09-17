@@ -9,7 +9,7 @@ you typed runs inside that VM, and the VM is torn down when it exits.
 ssh client
   -> socialweb-computer-ssh        (this repo: SSH server + web app)
        -> badgeBlueKeys lookup     (requester_associate association for the key)
-       -> deno run request-vm-ssh  (RFP -> bid -> accept -> cloud-init -> guest)
+       -> in-process requester     (RFP -> bid -> accept -> cloud-init -> guest)
             -> command runs in the guest, output streams back over SSH
 ```
 
@@ -109,33 +109,48 @@ The policy sandbox runs in a Worker **in this process**, so the server needs
 ## Run
 
 ```sh
-deno task start -- \
-  --requester-path ../atproto-market/request-vm-ssh/mod.ts \
-  --oauth-client-id https://ssh.example.com/oauth-client-metadata.json
+deno task start
 ```
 
-`--oauth-client-id` must match the `client_id` the page signs in with — the
-metadata document this server publishes, which is what the page uses whenever it
-is not on loopback. It is passed to the requester as `--oauth-session-client-id`
-because a refresh token is bound to the client that obtained it: a session this
-page deposited has to be refreshed as this client, not as whatever the requester
-would otherwise assume. Omit it on loopback, where the page uses the
-`http://localhost?...` form and the requester's default applies.
-
-The SSH server listens on `127.0.0.1:2222` and the web app on
-`127.0.0.1:8787`. State (session store, SSH host key) lands in
+That is the whole thing. The SSH server listens on `127.0.0.1:2222`, the web app
+on `127.0.0.1:8787`, and state (session store, SSH host key) lands in
 `.socialweb-computer-ssh/`.
 
-Register a key:
+Then, in order:
 
-1. Open <http://127.0.0.1:8787>, sign in with your handle.
+1. Open <http://127.0.0.1:8787> and sign in with your handle.
 2. Paste the contents of `~/.ssh/id_ed25519.pub` and give it a label.
 3. Connect:
 
-   ```sh
-   ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-       -p 2222 "$(your handle or DID)@127.0.0.1" 'hostname; id -un'
-   ```
+```sh
+ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -p 2222 "$(whoami)@127.0.0.1" 'hostname; id -un'
+```
+
+Use your handle or DID as the username, not `$(whoami)` — it is matched against
+your `requester_associate` records.
+
+To listen beyond loopback:
+
+```sh
+SSH_HOSTNAME=0.0.0.0 SERVE_ADDR=0.0.0.0 deno task start
+```
+
+### The OAuth client_id
+
+Nothing to configure for either of the above. The page signs in as a client of
+this deployment: off loopback it uses `https://<host>/oauth-client-metadata.json`,
+which this server publishes, and on loopback it uses the `http://localhost?...`
+form that the AT Protocol OAuth spec defines for development. Either way the
+page sends that `client_id` along with the session it deposits, so the SSH half
+refreshes as the client the token was issued to.
+
+`--oauth-client-id` is the fallback for a session deposited without one, and must
+be the exact URL the authorization server fetches:
+
+```sh
+deno task start -- --oauth-client-id https://ssh.example.com/oauth-client-metadata.json
+```
 
 ## `LC_` environment variables
 
@@ -153,12 +168,8 @@ forwards by default, and this server reads the whole namespace.
 
 `LC_SECRETS` is deliberately *not* accepted from a client: it names a file on
 the SSH host, so honouring it would let any authenticated account read host
-files into a VM it controls. Operators pass it themselves with
-`--requester-arg --secrets=/path/to/secrets.json`.
-
-Server-side `--requester-arg` (repeatable, `flag=value`) passes through to
-`request-vm-ssh` — for example `--requester-arg --relay-port=5555` against a
-relay you run yourself.
+files into a VM it controls. There is currently no operator-side way to set it
+either — the requester runs in-process, so there is no argv to pass it through.
 
 Every `LC_` variable — recognized or not — is also exported into the command's
 environment inside the guest, which is how `echo $LC_MY_VAR` works:
@@ -215,13 +226,13 @@ Both halves of this service are reachable by anyone on the network, so:
 ## Layout
 
 ```
-lib/common/socialweb-computer-common       wire types, LC_ parsing, requester argv
-lib/abc/socialweb-computer                KeyAuthorizer / ComputeCommandRunner / OAuthSessionSource
+lib/common/socialweb-computer-common       wire types, LC_ parsing, the session type
+lib/abc/socialweb-computer                KeyAuthorizer / ComputeCommandRunner / SessionStore
 lib/socialweb-computer-atproto            badgeBlueKeys lookup over a PDS
-lib/socialweb-computer-oauth-atproto      server-side AT Protocol OAuth client
+lib/socialweb-computer-oauth-atproto      verifies a deposited session against its PDS
 lib/socialweb-computer-requester-inproc   runComputeContract in-process + tunnel bridge
 lib/socialweb-computer-oauth-session-fs   durable session store
-lib/hono-factory-socialweb-computer-oauth Hono app: login, callback, key registry
+lib/hono-factory-socialweb-computer-oauth Hono app: metadata document, session deposit
 lib/socialweb-computer-ssh-ssh2           ssh2 server binding
 hono-socialweb-computer-ssh               CLI: serves both
 ```
@@ -235,12 +246,13 @@ deno task test:live   # provisions a real VM; needs a container runtime
 
 | File | Covers |
 |---|---|
-| `test/ssh_flow_test.ts` | Fake PLC + PDS, a real `requester_associate` record, a real SSH connection, and a real subprocess spawn. An associated key is accepted, unassociated keys are rejected, `LC_` variables reach the requester's argv and the guest command, and the requester's exit code survives the trip back. |
-| `test/ssh_auth_test.ts` | Signature verification: a valid signature passes, a signature over another blob, another key's signature, garbage, a missing blob, and an unparseable key are all refused; a probe with no signature passes. |
-| `test/account_sessions_test.ts` | The lease: a valid token is handed out without touching the network, an expiring one is refreshed exactly once for four concurrent leases, leases for one account do not queue, a lease carries no refresh token while the owner keeps the real one, and the store is written `0600` with a corrupt file quarantined rather than silently emptied. |
-| `test/oauth_web_test.ts` | Login redirect, callback cookie, key registration as a `requester_associate` record, malformed keys, delete, and rejection of unsigned, tampered, or foreign-signed cookies. |
-| `test/requester_contract_test.ts` | Every flag this repo emits is still declared by `request-vm-ssh`'s option table. |
-| `test/common_test.ts` | `LC_` parsing, policy defaults, SSH key comparison, requester argv. |
+| `test/common_test.ts` | The pure helpers: `LC_` parsing, policy defaults, SSH key comparison, and that `LC_VM_NAME` cannot carry anything into the guest's cloud-init. |
+| `test/guards_test.ts` | The outbound-fetch guards: private and special addresses, internal-looking hostnames refused before resolution, redirects refused rather than followed, and a client's env kept away from the host's own configuration. |
+| `test/ssh_auth_test.ts` | Signature verification: a valid signature passes; a signature over another blob, another key's signature, garbage, a missing blob, and an unparseable key are all refused; an unsigned probe is allowed. |
+| `test/ssh_flow_test.ts` | A fake PLC and PDS, a real `requester_associate` record, and a real SSH connection. Associated keys are accepted, unassociated ones rejected, `LC_` variables reach the command while non-`LC_` ones do not, and the requester's exit code survives the trip back. |
+| `test/oauth_web_test.ts` | The web half: the client metadata document served from the configured scope, a session stored only under the DID its PDS confirmed, and refusals for an unconfirmed session, a non-object body, and an oversized deposit. |
+| `test/web_assets_test.ts` | The page ships what the server serves, takes its scope from the generated module rather than a literal, runs the OAuth flow itself, and sends the `client_id` its session was issued to. |
+| `test/session_store_test.ts` | The session store: a corrupt file is quarantined rather than silently emptied, and the store is written owner-only. |
 | `test/live_market_test.ts` | **Live.** The whole path against real infrastructure: an ephemeral OAuth-PDS whose session injector mints the requester's session, a fake PLC, a dispatcher, an ephemeral atproto-relay, a bidder subprocess running the local container compute provider, and a guest provisioned from cloud-init. The test registers the SSH key as a `requester_associate` record, connects over SSH, and asserts the command ran in the guest and the guest was destroyed. |
 
 `live_market_test.ts` needs a container runtime (Apple `container` on darwin,

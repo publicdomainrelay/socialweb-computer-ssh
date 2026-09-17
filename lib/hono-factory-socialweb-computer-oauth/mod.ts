@@ -36,8 +36,8 @@ export function createWebFactory(opts: WebFactoryOptions) {
         client_name: opts.clientName ?? "socialweb-computer-ssh",
       }));
 
-      // The browser deposits the session it obtained so the SSH half can lease
-      // it into a temp dir for the requester. It is unauthenticated by nature --
+      // The browser deposits the session it obtained so the SSH half can use it
+      // to act as the signed-in account. It is unauthenticated by nature --
       // a session blob is the credential -- so it is proved against the PDS
       // before being stored, which also means a deposit costs a real round trip
       // rather than being a cheap way to fill the store.

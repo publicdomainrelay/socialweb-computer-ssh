@@ -21,14 +21,6 @@ export interface ComputeCommandRunner {
   ): Promise<void>;
 }
 
-export interface SessionLease {
-  sessionPath: string;
-}
-
-export interface OAuthSessionSource {
-  withSessionFor<T>(did: string, fn: (lease: SessionLease) => Promise<T>): Promise<T>;
-}
-
 export interface VerifiedSession {
   did: string;
   handle: string;

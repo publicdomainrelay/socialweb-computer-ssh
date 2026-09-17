@@ -26,6 +26,15 @@ export interface InProcessRequesterOptions {
   ingressProxyHost?: string;
   relayUrls?: string[];
   vmReadyTimeoutSec?: number;
+  /**
+   * OAuth client_id to refresh as, when the stored session does not carry one.
+   *
+   * A refresh token is bound to the client that obtained it. The session
+   * deposited by the page normally carries its own client_id; this is the
+   * fallback for a session that does not, and must match the metadata document
+   * this deployment publishes.
+   */
+  oauthClientId?: string;
   /** /etc/hosts entries the guest needs to reach this dispatcher. */
   guestHostAliases?: string[];
   /**
@@ -82,8 +91,17 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
       agent = (async () => {
         const stored = await opts.sessionStore.get(did);
         if (!stored) throw new Error(`no oauth session stored for ${did}`);
+        // A refresh token is bound to the client_id that obtained it, so the
+        // session's own client_id wins over the operator's configured one. The
+        // session carries it because that is the only place it is knowable: on
+        // loopback the page signs in with a `http://localhost?...` virtual
+        // metadata document, which the server cannot reconstruct.
+        const clientId = stored.clientId ?? opts.oauthClientId;
         return await createOAuthAgentFromSession(stored, {
-          saveSession: (updated) => opts.sessionStore.set(did, updated),
+          clientId,
+          // The helper rebuilds the session from the token response, which does
+          // not echo the client_id, so re-attach it or a restart would lose it.
+          saveSession: (updated) => opts.sessionStore.set(did, { ...updated, clientId }),
         });
       })();
       agents.set(did, agent);

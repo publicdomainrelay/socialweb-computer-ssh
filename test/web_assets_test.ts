@@ -39,3 +39,34 @@ Deno.test("the web app runs the flow itself rather than posting credentials to t
   assertEquals([...pds.matchAll(/fetch\(\s*['"]\//g)].map((m) => m[0]).length, 1);
   assertEquals(pds.includes("depositSession"), true);
 });
+
+Deno.test("the deposited session names the client_id it was issued to", async () => {
+  // A refresh token is bound to the client that obtained it, and the server has
+  // no other way to learn which client that was: on loopback the page signs in
+  // with a `http://localhost?...` virtual metadata document that cannot be
+  // reconstructed from the session, and a refresh presented as a different
+  // client is rejected. So the session has to carry it, end to end.
+  //
+  // Source-level, matching this file: there is no seam to inject the agent
+  // helper, so the invariant is asserted where it is written.
+  const oauth = await read("lib/atproto-oauth.js");
+  const payload = oauth.slice(
+    oauth.indexOf("session: {"),
+    oauth.indexOf("returnTo: pending.returnTo"),
+  );
+  assertEquals(payload.includes("clientId: pending.clientId"), true, "the page must send its client_id");
+
+  const common = await Deno.readTextFile(
+    new URL("../lib/common/socialweb-computer-common/mod.ts", import.meta.url),
+  );
+  assertEquals(common.includes("clientId?: string"), true, "the session type must carry it");
+
+  const inproc = await Deno.readTextFile(
+    new URL("../lib/socialweb-computer-requester-inproc/mod.ts", import.meta.url),
+  );
+  assertEquals(
+    inproc.includes("stored.clientId ?? opts.oauthClientId"),
+    true,
+    "the requester must refresh as the session's own client",
+  );
+});

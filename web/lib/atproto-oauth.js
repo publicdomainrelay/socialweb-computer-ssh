@@ -241,6 +241,7 @@ export async function completeLogin(code, state) {
       pds,
       dpopPublicJwk: pending.dpopPublicJwk,
       dpopPrivateJwk: pending.dpopPrivateJwk,
+      clientId: pending.clientId,
     },
     returnTo: pending.returnTo,
   };

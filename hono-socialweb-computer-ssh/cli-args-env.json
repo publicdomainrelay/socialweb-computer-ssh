@@ -37,17 +37,6 @@
       "description": "SSH host key path (generated if missing)",
       "env": "HOST_KEY_PATH"
     },
-    "requester-path": {
-      "type": "string",
-      "description": "Path to request-vm-ssh's mod.ts, run through deno for each SSH connection",
-      "env": "REQUESTER_PATH",
-      "default": "../atproto-market/request-vm-ssh/mod.ts"
-    },
-    "requester-arg": {
-      "type": "string",
-      "description": "Extra argument passed through to request-vm-ssh, joined with = for a flag value (repeatable, or comma-separated). e.g. --relay-port=5555",
-      "env": "REQUESTER_ARG"
-    },
     "default-command": {
       "type": "string",
       "description": "Command run in the guest when the client requests a shell without a command",
@@ -110,7 +99,7 @@
     },
     "oauth-client-id": {
       "type": "string",
-      "description": "OAuth client_id the web app signs in with, and therefore what the requester must refresh as. For a non-loopback deployment this is https://<host>/oauth-client-metadata.json. Omit to leave the requester's own default.",
+      "description": "Fallback client_id to refresh as when a deposited session does not carry its own. Must be the exact URL the authorization server fetches, e.g. https://<host>/oauth-client-metadata.json. Normally unnecessary: the page sends the client_id its session was issued to.",
       "env": "OAUTH_CLIENT_ID"
     },
     "ingress-proxy-host": {

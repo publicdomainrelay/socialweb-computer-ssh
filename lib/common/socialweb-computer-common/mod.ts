@@ -30,6 +30,13 @@ export interface OAuthSessionData {
   dpopPublicJwk: Record<string, string>;
   dpopPrivateJwk: Record<string, string>;
   dpopNonce?: string;
+  /**
+   * The client_id this session was issued to. Optional because the rest of the
+   * polyrepo does not carry it, but a refresh token is bound to the client that
+   * obtained it, so a session that knows its own client_id can be refreshed
+   * without the operator having to configure what that was.
+   */
+  clientId?: string;
 }
 
 export interface PresentedKey {

@@ -3,10 +3,10 @@ import { createLogger, createStructuredLogger, getMinLogLevelFromEnv } from "@pu
 import { createServe } from "@publicdomainrelay/serve";
 import { EventBus } from "@publicdomainrelay/event-bus";
 import { createStaticFilesApp, type StaticFileEvent } from "@publicdomainrelay/hono-factory-static-files-fs";
-import { SOCIALWEB_COMPUTER_SSH_OAUTH_SCOPE } from "@publicdomainrelay/oauth-scope";
+import { REQUESTER_OAUTH_SCOPE } from "@publicdomainrelay/oauth-scope";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
 import { createAtprotoSessionVerifier } from "@publicdomainrelay/socialweb-computer-oauth-atproto";
-import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
+import { createFileSessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import { createInProcessRequester } from "@publicdomainrelay/socialweb-computer-requester-inproc";
 import { createWebFactory } from "@publicdomainrelay/hono-factory-socialweb-computer-oauth";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
@@ -28,24 +28,12 @@ await Deno.mkdir(stateDir, { recursive: true, mode: 0o700 });
 const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`, {
   onCorrupt: ({ path, quarantine }) => logger.error("session_store_corrupt", { path, quarantine }),
 });
-const sessions = createFsOAuthSessionSource({ sessionStore });
 
 const authorizer = createAtprotoKeyAuthorizer({
   plcDirectoryUrl: options.plcDirectoryUrl as string,
   cacheTtlMs: (options.associationsCacheTtlSec as number) * 1000,
   log,
 });
-
-const requesterArgs = ((options.requesterArg ?? []) as (string | string[])[])
-  .flatMap((v) => Array.isArray(v) ? v : v.split(","))
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-// The session the web app deposits was issued to this deployment's client, so
-// the requester has to refresh as that client rather than its own default.
-if (options.oauthClientId) {
-  requesterArgs.push("--oauth-session-client-id", options.oauthClientId as string);
-}
 
 const relayUrls = ((options.relayUrl as string) || "")
   .split(",").map((s) => s.trim()).filter(Boolean);
@@ -66,6 +54,7 @@ const runner = createInProcessRequester({
   ingressProxyHost: options.ingressProxyHost as string,
   relayUrls,
   vmReadyTimeoutSec: options.vmReadyTimeoutSec as number,
+  oauthClientId: options.oauthClientId as string | undefined,
   log,
 });
 
@@ -87,7 +76,7 @@ const ssh = createSshServer({
 const web = createWebFactory({
   sessionStore,
   verifier: createAtprotoSessionVerifier(),
-  scope: SOCIALWEB_COMPUTER_SSH_OAUTH_SCOPE.join(" "),
+  scope: REQUESTER_OAUTH_SCOPE.join(" "),
   log,
 });
 

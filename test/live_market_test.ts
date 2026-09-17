@@ -32,7 +32,7 @@ import { createContainerBackend } from "@publicdomainrelay/container-backend-con
 import { createDockerBackend } from "@publicdomainrelay/container-backend-docker";
 import { generateLocalhostTlsCert } from "@publicdomainrelay/tls-localhost";
 import { createAtprotoKeyAuthorizer } from "@publicdomainrelay/socialweb-computer-atproto";
-import { createFileSessionStore, createFsOAuthSessionSource } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
+import { createFileSessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import { createInProcessRequester } from "@publicdomainrelay/socialweb-computer-requester-inproc";
 import { createServe } from "@publicdomainrelay/serve";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
