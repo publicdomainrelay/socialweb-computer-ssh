@@ -22,8 +22,9 @@ ssh client
 - **Web app** (browser, no server-side session) runs the AT Protocol OAuth flow
   itself, registers SSH public keys as those records, and deposits the resulting
   session so the SSH half can use it. Modelled on did-key-associator.
-- **Provisioning** shells out through Deno to `request-vm-ssh`, passing the
-  OAuth session through a temporary directory.
+- **Provisioning** runs `request-vm-ssh` **in this process** — no subprocess.
+  One agent per account owns the session, so concurrent connections share a
+  refresh lock instead of racing a single-use refresh token.
 - **Client options** travel as `LC_` environment variables:
 
   ```sh
@@ -80,45 +81,30 @@ trip, and a blob claiming someone else's DID is stored under its own.
 
 ## The session handoff
 
-The session is the polyrepo's portable form — what qr.fedfork.com hands out,
-what hono-pds's `sessionInjector` mints, and what `request-vm-ssh` reads with
-`--atproto-oauth-qr --oauth-session-file`: access and refresh JWT, user DID,
-handle, PDS URL, and the DPoP key as plain JWKs.
-
-```
-oauth-sessions.json        (this repo's store, keyed by DID)
-  -> <tmpdir>/session.json (one account's session, copied in)
-       -> deno run request-vm-ssh --atproto-oauth-qr --oauth-session-file <tmpdir>/session.json
-  <- <tmpdir>/session.json (rotated tokens copied back)
-```
-
-`request-vm-ssh` also has an `--atproto-oauth --oauth-session-path` mode that
-reads `@atproto/oauth-client`'s own session store. This repo does not use it:
-that store's DPoP entry is a live key object with no `toJSON`, so it does not
-survive a JSON round-trip and cannot be restored from a file. The portable
-form has no such problem — its DPoP key is a JWK that both sides can import.
-
 One sign-in serves every key on an account, and **the server is the only thing
-that refreshes**. Each connection gets a *copy* -- the lease carries no refresh
-token -- and the child is run in a mode that forbids local rotation, disables the
-proactive-refresh keepalive, and fails cleanly rather than falling back to an
-interactive QR prompt.
+that refreshes**. The requester runs in-process against one long-lived agent per
+account, so concurrent connections share its refresh lock rather than each
+holding a copy of a token that can only be spent once.
 
 That is not tidiness. Refresh tokens are single-use, and on a production
 authorization server replaying one **deletes the account's session** rather than
-just failing, so a second rotator is an outage. Connections for one account run
-in parallel; the only thing serialized is the check-and-refresh itself, which is
-why it takes milliseconds rather than the length of a provisioning run.
+just failing. A second rotator is an outage, not a slow path. Connections for one
+account run in parallel; nothing is serialized but the refresh itself.
 
-The bound: a run must finish inside its access token's remaining life (about 15
-minutes). A run that outlives it fails with a distinct error rather than hanging.
-Lifting that needs a refresh channel back to the owner.
+The requester's records are authored by the signed-in user: `requester-xrpc`
+takes the market identity from the session, so a run writes to the account's own
+PDS and the bids arrive over the firehose.
 
-An SSH client that disconnects mid-provision is *not* killed: the requester runs
-to completion, its command writes into a closed channel, and it still submits
-`vm.delete`. Killing it early is what would leak the VM, so a run is bounded by
-`--session-max-sec` instead (`LC_KEEP_VM` used to opt out of teardown and is
-gone).
+### The guest session
+
+The SSH session to the guest does not shell out to `ssh`. The guest's tunnel is a
+WebSocket; the server opens it directly, wraps it as a duplex stream, and drives
+it with `ssh2`'s client. That drops the `ssh` binary, `websocat`, the
+ProxyCommand string, and `ensureWebsocat` — which prepends to the process `PATH`,
+a bug in a server doing concurrent work.
+
+The policy sandbox runs in a Worker **in this process**, so the server needs
+`--unstable-worker-options` (and `--unstable-kv`); see the `start` task.
 
 ## Run
 
@@ -233,9 +219,8 @@ lib/common/socialweb-computer-common       wire types, LC_ parsing, requester ar
 lib/abc/socialweb-computer                KeyAuthorizer / ComputeCommandRunner / OAuthSessionSource
 lib/socialweb-computer-atproto            badgeBlueKeys lookup over a PDS
 lib/socialweb-computer-oauth-atproto      server-side AT Protocol OAuth client
-lib/socialweb-computer-account-sessions-atproto  one owner per account: lease + refresh
+lib/socialweb-computer-requester-inproc   runComputeContract in-process + tunnel bridge
 lib/socialweb-computer-oauth-session-fs   durable session store
-lib/socialweb-computer-request-vm-ssh     spawns request-vm-ssh per connection
 lib/hono-factory-socialweb-computer-oauth Hono app: login, callback, key registry
 lib/socialweb-computer-ssh-ssh2           ssh2 server binding
 hono-socialweb-computer-ssh               CLI: serves both
