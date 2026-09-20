@@ -49,7 +49,7 @@ export async function createDpopProof(keyPair, publicJwk, htm, htu, nonce, acces
   return `${signingInput}.${base64url(new Uint8Array(sig))}`;
 }
 
-async function authServerMetadata(authServer) {
+export async function authServerMetadata(authServer) {
   const res = await fetch(`${authServer}/.well-known/oauth-authorization-server`);
   if (!res.ok) throw new Error(`authorization server metadata: ${res.status}`);
   return res.json();
@@ -242,6 +242,9 @@ export async function completeLogin(code, state) {
       dpopPublicJwk: pending.dpopPublicJwk,
       dpopPrivateJwk: pending.dpopPrivateJwk,
       clientId: pending.clientId,
+      // Kept so the session can refresh itself later. The endpoint is discoverable
+      // from the PDS, but only by a round trip, and it is already in hand here.
+      tokenEndpoint: pending.tokenEndpoint,
     },
     returnTo: pending.returnTo,
   };
