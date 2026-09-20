@@ -1,6 +1,7 @@
 import { createFactory } from "@hono/hono/factory";
 import type { SessionVerifier } from "@publicdomainrelay/socialweb-computer-abc";
 import type { OAuthSessionData } from "@publicdomainrelay/socialweb-computer-common";
+import { COCORE_APP_WELL_KNOWN_PATH } from "@publicdomainrelay/socialweb-computer-common";
 import type { SessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 
 export interface WebFactoryOptions {
@@ -26,6 +27,14 @@ export interface WebFactoryOptions {
    * one it happens to be served from. Defaults to the public origin's hostname.
    */
   sshPublicHost?: string;
+  /**
+   * This deployment's own DID, i.e. the repo its dev.cocore.app.registration
+   * record lives in.
+   *
+   * Unset means the deployment runs no app PDS, so there is no DID to advertise
+   * and the well-known route 404s rather than naming one that does not answer.
+   */
+  appDid?: string;
   clientName?: string;
   clientMetadataPath?: string;
   maxBodyBytes?: number;
@@ -49,6 +58,15 @@ export function createWebFactory(opts: WebFactoryOptions) {
         return c.json({
           sshHost: opts.sshPublicHost ?? new URL(origin).hostname,
         });
+      });
+
+      // co/core fetches this from the returnUrl's host to prove the app owns the
+      // redirect target. It has to answer before the first pairing can start:
+      // co/core refuses a devicePair.start whose app DID has published no
+      // registration record, and the record names these returnUrls.
+      app.get(COCORE_APP_WELL_KNOWN_PATH, (c) => {
+        if (!opts.appDid) return c.notFound();
+        return c.json({ did: opts.appDid });
       });
 
       // The browser runs the whole OAuth flow itself, client-side; this document

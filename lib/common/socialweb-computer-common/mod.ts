@@ -174,3 +174,61 @@ export function vmNameFromEnv(env: Record<string, string>): string | undefined {
   }
   return vmName;
 }
+
+export const COCORE_APP_REGISTRATION_NSID = "dev.cocore.app.registration";
+export const COCORE_APP_REGISTRATION_RKEY = "self";
+export const COCORE_APP_WELL_KNOWN_PATH = "/.well-known/cocore-app.json";
+
+/**
+ * What co/core reads to learn which DID an app is, and which hosts its browser
+ * may be sent back to.
+ *
+ * Shaped from co/core's documented example rather than a lexicon: no lexicon
+ * for this NSID exists in the polyrepo, and these are the fields that example
+ * names. `returnUrls` is the load-bearing one -- co/core refuses a returnUrl
+ * whose host has not proved it holds this DID, and the proof is
+ * /.well-known/cocore-app.json on that host.
+ */
+export interface CocoreAppRegistration {
+  $type: typeof COCORE_APP_REGISTRATION_NSID;
+  name: string;
+  website: string;
+  description?: string;
+  iconUrl?: string;
+  returnUrls: string[];
+}
+
+export function cocoreAppRegistration(input: {
+  name: string;
+  website: string;
+  returnUrl: string;
+  description?: string;
+  iconUrl?: string;
+}): CocoreAppRegistration {
+  return {
+    $type: COCORE_APP_REGISTRATION_NSID,
+    name: input.name,
+    website: input.website,
+    ...(input.description ? { description: input.description } : {}),
+    ...(input.iconUrl ? { iconUrl: input.iconUrl } : {}),
+    returnUrls: [input.returnUrl],
+  };
+}
+
+/**
+ * Whether a stored registration already says what this deployment says.
+ *
+ * Compared before writing because a commit's rev advances even when the record
+ * bytes do not: rewriting on every boot would push a no-op commit at every relay
+ * that crawls this PDS, which is noise at exactly the record co/core reads.
+ */
+export function sameRegistration(a: CocoreAppRegistration | null, b: CocoreAppRegistration): boolean {
+  if (!a) return false;
+  return a.name === b.name &&
+    a.website === b.website &&
+    a.description === b.description &&
+    a.iconUrl === b.iconUrl &&
+    a.returnUrls.length === b.returnUrls.length &&
+    a.returnUrls.every((url, i) => url === b.returnUrls[i]);
+}
+

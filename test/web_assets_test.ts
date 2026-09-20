@@ -12,7 +12,7 @@ Deno.test("the web app ships the files the server serves and the page loads", as
   assertEquals(html.includes("/styles.css"), true);
   assertEquals(html.includes("no build step") || html.includes("<swc-app>"), true);
 
-  for (const asset of ["styles.css", "components/swc-app.js", "components/swc-key-list.js", "lib/atproto-oauth.js", "lib/pds.js", "generated/oauth-scope.js"]) {
+  for (const asset of ["styles.css", "components/swc-app.js", "components/swc-key-list.js", "components/swc-pair.js", "lib/atproto-oauth.js", "lib/cocore-pair.js", "lib/pds.js", "generated/oauth-scope.js"]) {
     const stat = await Deno.stat(new URL(asset, new URL("../web/", import.meta.url)));
     assertEquals(stat.isFile, true, `${asset} must exist`);
   }

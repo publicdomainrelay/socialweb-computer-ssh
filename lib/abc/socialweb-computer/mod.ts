@@ -75,3 +75,45 @@ export interface SshServerHandle {
   listen(): Promise<number>;
   shutdown(): Promise<void>;
 }
+
+/**
+ * A co/core inference credential belonging to one atmosphere account.
+ *
+ * Held server-side and reached only through the pairing flow, never through
+ * anything the browser deposits: a token that the browser could name is a token
+ * the browser could choose.
+ */
+export interface CocoreToken {
+  token: string;
+  /** Inference endpoint the token is good against, as co/core reported it. */
+  apiBase?: string;
+  /** The co/core account that approved the pairing, which need not be the atmosphere account it is filed under. */
+  accountDid?: string;
+  pairedAt: string;
+}
+
+export interface CocorePairingStarted {
+  /**
+   * Opaque handle for the browser to poll with.
+   *
+   * Deliberately not the account DID: a poll carrying a DID would let one
+   * browser advance or probe another account's pairing, and would cost a PDS
+   * round trip to resolve an identity that start already established.
+   */
+  pairId: string;
+  userCode: string;
+  verificationUri: string;
+  intervalSecs: number;
+}
+
+export type CocorePairingStatus = "pending" | "complete" | "denied" | "expired";
+
+export interface CocorePairing {
+  /** Begin a pairing for an account whose session the caller has already verified. */
+  start(did: string): Promise<CocorePairingStarted>;
+  /** Advance one pairing. Resolves to "complete" only once the token is stored. */
+  poll(pairId: string): Promise<CocorePairingStatus>;
+  /** The stored token for an account, if it ever paired. */
+  token(did: string): Promise<CocoreToken | undefined>;
+}
+

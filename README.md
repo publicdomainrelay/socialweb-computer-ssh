@@ -25,6 +25,12 @@ ssh client
 - **Provisioning** runs `request-vm-ssh` **in this process** — no subprocess.
   One agent per account owns the session, so concurrent connections share a
   refresh lock instead of racing a single-use refresh token.
+- **co/core inference** — an account pairs a co/core account once, and every VM
+  it opens afterwards gets that token at `/root/.pi/agent/cocore-config.json`,
+  spent from the user's own credits rather than the operator's. See
+  [co/core inference](#cocore-inference).
+- **App PDS** — the door also serves its own repo at its public origin, holding
+  the `dev.cocore.app.registration` record that names this app to co/core.
 - **Client options** travel as `LC_` environment variables:
 
   ```sh
@@ -106,7 +112,64 @@ a bug in a server doing concurrent work.
 The policy sandbox runs in a Worker **in this process**, so the server needs
 `--unstable-worker-options` (and `--unstable-kv`); see the `start` task.
 
-## Run
+## co/core inference
+
+A VM with no credentials in it can run code but cannot call a model. Pairing a
+[co/core](https://cocore.dev) account once fixes that: every VM the account opens
+afterwards gets a `Bearer` token at `/root/.pi/agent/cocore-config.json`, and
+inference is billed to the user's own co/core credits rather than the operator's.
+
+Pairing is co/core's device-authorization flow, not ours. The page starts a
+pairing, co/core returns a `userCode` and a verification URI, the user approves
+there, and co/core hands back a key bound to their DID. The key is stored
+server-side in the state dir, keyed by atmosphere DID, and one pairing serves
+every later connection.
+
+Two properties worth stating, because both are load-bearing:
+
+- **The browser never sees the key, and cannot name one.** The `deviceId` that
+  reads the key stays in the process; the page polls with an opaque `pairId`
+  instead. Tokens live in their own store rather than on the deposited session,
+  because `POST /session` is unauthenticated and stores the blob it is handed —
+  any field on that type is a field any caller could plant.
+- **The token reaches the guest through the secrets capability**, the same
+  machinery `request-vm-ssh --secrets` uses: an ephemeral server that exists for
+  one contract, reachable only through the ingress proxy, unlocked by the
+  winning bidder's workload identity. Nothing is written into cloud-init, which
+  is public.
+
+An account that never pairs is unaffected: `capabilityFor` returns nothing, the
+contract runs with no capabilities, and the door behaves exactly as it did
+before this existed.
+
+### The app PDS
+
+co/core refuses `devicePair.start` until the app DID's repo carries a
+`dev.cocore.app.registration` record, so the door also serves a repo of its own
+at `did:web:<public-origin>` — the same hostname and listener Caddy already
+routes here, because `did:web` resolves by fetching `/.well-known/did.json` from
+that origin. It publishes:
+
+- `/.well-known/did.json` — the app's DID document, whose `#atproto_pds` names
+  this origin and whose `#atproto` is the key the repo's commits are signed with.
+- `/.well-known/atproto-did` — the app DID, which also satisfies handle
+  resolution.
+- `/.well-known/cocore-app.json` — `{"did": …}`, the proof co/core requires
+  before it will send a browser back to a `returnUrl` on this host.
+- the registration record itself, written once at boot and only when it differs
+  from what is already there. A commit advances its rev even when the bytes do
+  not, so rewriting every boot would push a no-op commit at every crawling relay.
+
+The PDS is mounted `readOnly`: it serves one repo for one DID, so the factory's
+`createAccount` and `getServiceAuth` have no use here and two real hazards —
+`createAccount` is unauthenticated, and `getServiceAuth` signs any `aud`/`lxm`
+with the key the DID document publishes. Read routes stay open (co/core fetches
+the registration record with no credentials) and the write routes keep their
+auth check.
+
+Without `--public-origin` there is no app PDS and no pairing: a `did:web` needs
+a public origin to be resolvable from, and a `did:web:127.0.0.1` would be a lie.
+
 
 ```sh
 deno task start
@@ -237,6 +300,27 @@ are remembered separately even though they are the same server.
 The web half is behind TLS because the page's `client_id` has to be an https URL
 with no port: the authorization server fetches that document.
 
+Two state files carry an identity, and losing either is not a restart:
+
+- `<state-dir>/ssh_host_ed25519_key` — the door's SSH host key.
+- `<state-dir>/app-pds-private-key` — signs the app repo. Losing it makes every
+  commit in that repo unverifiable and orphans the `dev.cocore.app.registration`
+  record co/core reads, so a fresh key means a fresh DID in practice.
+
+### DNS
+
+One record, for the app's handle — not for the `did:web` itself, which resolves
+over HTTPS alone:
+
+```
+_atproto.<APP_HANDLE>.  TXT  "did=did:web:<public-origin host>"
+```
+
+With the default `--app-handle`, that is `_atproto.<host>`. Do not point it at
+`socialweb.computer`'s apex: that name's `_atproto` TXT is already claimed by an
+unrelated account. Add it before the first deploy — handle resolution is what
+lets the app look like an ordinary account rather than a bare DID.
+
 ### Taking port 22
 
 So that people can `ssh handle@host` without `-p`. The host's own sshd keeps
@@ -348,14 +432,18 @@ Both halves of this service are reachable by anyone on the network, so:
 
 ```
 lib/common/socialweb-computer-common       wire types, LC_ parsing, the session type
-lib/abc/socialweb-computer                KeyAuthorizer / ComputeCommandRunner / SessionStore
+lib/json-file-store-fs                     atomic 0600 JSON file store
+lib/key-file-fs                            persisted secp256k1 hex, generated on first use
+lib/abc/socialweb-computer                KeyAuthorizer / ComputeCommandRunner / CocorePairing
 lib/socialweb-computer-atproto            badgeBlueKeys lookup over a PDS
 lib/socialweb-computer-oauth-atproto      verifies a deposited session against its PDS
+lib/socialweb-computer-cocore-http        co/core device pairing, token store, guest secret entry
 lib/socialweb-computer-requester-inproc   runComputeContract in-process + tunnel bridge
 lib/socialweb-computer-oauth-session-fs   durable session store
-lib/hono-factory-socialweb-computer-oauth Hono app: metadata document, session deposit
+lib/hono-factory-socialweb-computer-oauth Hono app: metadata document, session deposit, app DID
+lib/hono-factory-socialweb-computer-cocore Hono app: /cocore pairing endpoints
 lib/socialweb-computer-ssh-ssh2           ssh2 server binding
-hono-socialweb-computer-ssh               CLI: serves both
+hono-socialweb-computer-ssh               CLI: serves both, plus the app PDS
 ```
 
 ## Tests
@@ -374,7 +462,9 @@ deno task test:live   # provisions a real VM; needs a container runtime
 | `test/oauth_web_test.ts` | The web half: the client metadata document served from the configured scope, a session stored only under the DID its PDS confirmed, and refusals for an unconfirmed session, a non-object body, and an oversized deposit. |
 | `test/web_assets_test.ts` | The page ships what the server serves, takes its scope from the generated module rather than a literal, runs the OAuth flow itself, and sends the `client_id` its session was issued to. |
 | `test/session_store_test.ts` | The session store: a corrupt file is quarantined rather than silently emptied, and the store is written owner-only. |
-| `test/live_market_test.ts` | **Live.** The whole path against real infrastructure: an ephemeral OAuth-PDS whose session injector mints the requester's session, a fake PLC, a dispatcher, an ephemeral atproto-relay, a bidder subprocess running the local container compute provider, and a guest provisioned from cloud-init. The test registers the SSH key as a `requester_associate` record, connects over SSH, and asserts the command ran in the guest and the guest was destroyed. |
+| `test/cocore_pair_test.ts` | Pairing against a fake co/core: the `deviceId` never leaves the process, a pending poll stores nothing, an approved one stores the key owner-only, a denied one leaves the account able to pair again, and the session-key hedge resolves all three spellings. |
+| `test/app_pds_test.ts` | The app PDS: the DID document is built from the host it is served at, `alsoKnownAs` is absent rather than empty when unset, and `readOnly` takes `createAccount` and `getServiceAuth` off the wire while leaving reads open and unauthenticated writes refused. |
+| `test/live_market_test.ts` | **Live.** The whole path against real infrastructure: an ephemeral OAuth-PDS whose session injector mints the requester's session, a fake PLC, a dispatcher, an ephemeral atproto-relay, a bidder subprocess running the local container compute provider, and a guest provisioned from cloud-init. The test registers the SSH key as a `requester_associate` record, connects over SSH, and asserts the command ran in the guest, a capability's secret landed in it, and the guest was destroyed. |
 
 `live_market_test.ts` needs a container runtime (Apple `container` on darwin,
 docker elsewhere) and skips loudly without one. It runs the ephemeral

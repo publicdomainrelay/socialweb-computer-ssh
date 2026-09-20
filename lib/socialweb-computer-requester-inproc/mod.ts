@@ -5,6 +5,8 @@ import type { RequesterPDS, SshSessionProvider } from "@publicdomainrelay/reques
 import type { SessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import type { CommandIo, ComputeCommandRunner } from "@publicdomainrelay/socialweb-computer-abc";
 import { createServe } from "@publicdomainrelay/serve";
+import type { GuestCapability } from "@publicdomainrelay/guest-capability-abc";
+import { loadOrCreateKeyHex } from "@publicdomainrelay/key-file-fs";
 import type { AuthorizedAccount } from "@publicdomainrelay/socialweb-computer-common";
 import { policyFromEnv, renderExecCommand, vmNameFromEnv } from "@publicdomainrelay/socialweb-computer-common";
 import { pollGuestReady, runSessionOverTunnel } from "./bridge.ts";
@@ -41,6 +43,17 @@ export interface InProcessRequesterOptions {
    * the write would be refused. Turning it on means widening the scope.
    */
   rbac?: boolean;
+  /**
+   * Builds the guest capabilities for one run, for one account.
+   *
+   * Called inside run() rather than at construction because a capability's
+   * prepare() mints its own keypair and mounts its own serve handle, and the
+   * secrets capability holds that at module scope -- so one instance serves
+   * exactly one contract, while this requester serves every connection from one
+   * process. Returning undefined runs the contract with no capabilities, which
+   * is what an account that never paired should get.
+   */
+  capabilityFor?: (did: string) => Promise<GuestCapability | undefined>;
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
@@ -99,21 +112,6 @@ export function explainNoSession(
   return lines.join("\n") + "\n";
 }
 
-
-
-/** Load the requester's private key hex, generating and persisting one on first use. */
-async function requesterKeyHex(path: string): Promise<string> {
-  const existing = await Deno.readTextFile(path).then((s) => s.trim()).catch(() => "");
-  if (existing) return existing;
-  const { Secp256k1Keypair } = await import("@atproto/crypto");
-  const kp = await Secp256k1Keypair.create({ exportable: true });
-  const hex = Array.from(await kp.export()).map((b) => b.toString(16).padStart(2, "0")).join("");
-  const dir = path.split("/").slice(0, -1).join("/");
-  if (dir) await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
-  await Deno.writeTextFile(path, hex, { mode: 0o600 });
-  return hex;
-}
-
 export function createInProcessRequester(opts: InProcessRequesterOptions): InProcessRequester {
   const log = opts.log ?? (() => {});
   const plcUrl = opts.plcDirectoryUrl ?? "https://plc.directory";
@@ -147,7 +145,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
         const pds = await createRequesterPDS({
           logger,
           serve: requesterServe,
-          privateKeyHex: await requesterKeyHex(opts.requesterKeyPath),
+          privateKeyHex: await loadOrCreateKeyHex(opts.requesterKeyPath),
           plcDirectoryUrl: plcUrl,
           ingressProxyHost: opts.ingressProxyHost,
           label: "socialweb-computer-ssh",
@@ -218,6 +216,16 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
 
         const pds = await requesterFor(account.did);
 
+        // A capability that cannot be built must not cost the client its session.
+        // Whatever it carries is a convenience, and letting a failed read here
+        // throw would turn a provisionable run into "provisioning failed" on
+        // stderr -- a worse outcome than running without it.
+        const capability = await opts.capabilityFor?.(account.did)
+          .catch((err) => {
+            log("capability_build_failed", { did: account.did, error: String(err) });
+            return undefined;
+          });
+
         eventStreams = createDefaultATProtoEventStreamsClient({
           additionalRelays: opts.relayUrls ?? [],
           log: logger,
@@ -235,6 +243,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
           policy: { name: policy, args: policyArgs },
           guestHostAliases: opts.guestHostAliases,
           rbac: opts.rbac ?? false,
+          capabilities: capability ? [capability] : [],
           logger,
         });
 

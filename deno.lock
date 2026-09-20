@@ -33,6 +33,7 @@
     "npm:@noble/hashes@^1.8.0": "1.8.0",
     "npm:@peculiar/x509@^1.12.3": "1.14.3",
     "npm:@types/ssh2@1": "1.15.6",
+    "npm:jose@5": "5.10.0",
     "npm:multiformats@13": "13.4.2",
     "npm:multiformats@^13.3.0": "13.4.2",
     "npm:ssh2@^1.16.0": "1.17.0",
@@ -990,6 +991,9 @@
     },
     "iso-datestring-validator@2.2.2": {
       "integrity": "sha512-yLEMkBbLZTlVQqOnQ4FiMujR6T4DEcCb1xizmvXS+OxuhwcbtynoosRzdMA69zZCShCNAbi+gJ71FxZBBXx1SA=="
+    },
+    "jose@5.10.0": {
+      "integrity": "sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg=="
     },
     "lru-cache@10.4.3": {
       "integrity": "sha512-JNAzZcXrCt42VGLuYz0zfAzDfAvJWW6AfYlDBQyDV5DClI2m5sAmK+OIO7s59XfsRsWHp02jAJrRadPRGTt6SQ=="

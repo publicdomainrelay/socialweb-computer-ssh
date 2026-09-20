@@ -37,6 +37,8 @@ import { createInProcessRequester } from "@publicdomainrelay/socialweb-computer-
 import { createServe } from "@publicdomainrelay/serve";
 import { createSshServer } from "@publicdomainrelay/socialweb-computer-ssh-ssh2";
 import { BADGE_BLUE_KEYS_NSID, splitSshPublicKey } from "@publicdomainrelay/socialweb-computer-common";
+import { createSecretsCapability } from "@publicdomainrelay/guest-capability-secrets";
+import { COCORE_CONFIG_PATH_VM, cocoreSecretEntry } from "@publicdomainrelay/socialweb-computer-cocore-http";
 import { installFetchInterceptor } from "../../atproto-market/test/fetch-interceptor.ts";
 
 const ORG = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
@@ -368,24 +370,32 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     void bidderLog(bidderChild.stdout);
     void bidderLog(bidderChild.stderr);
 
-    // The requester's session reaches the CLI through this repo's tempdir lease.
     const stateDir = await Deno.makeTempDir({ prefix: "swc-live-state-" });
     const sessionStore = createFileSessionStore(`${stateDir}/oauth-sessions.json`);
     await sessionStore.set(requesterAcct.did, requesterInj.sessionData as never);
 
-    const serve = createServe({ logger: log });
+    // A sentinel standing in for a co/core token. This is the only test that
+    // proves a capability's secrets actually reach the guest's filesystem, and
+    // it has to go through runComputeContract to do it: the delivery depends on
+    // the winning bid's workload-identity config and the guest's token exchange,
+    // so nothing short of a real bidder can stand in for it.
+    const CAPABILITY_SENTINEL = "cocore-sentinel-6f2a";
     const ssh = createSshServer({
       config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key` },
       authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl }),
       runner: createInProcessRequester({
         sessionStore,
         requesterKeyPath: `${stateDir}/requester-private-key`,
-        serve,
         plcDirectoryUrl,
         ingressProxyHost,
         relayUrls: [relayUrl],
         guestHostAliases: [`${gateway} relay.localhost`],
         vmReadyTimeoutSec: 180,
+        capabilityFor: () =>
+          Promise.resolve(createSecretsCapability({
+            secrets: [cocoreSecretEntry(CAPABILITY_SENTINEL)],
+            logger: log,
+          })),
         log: (event, data) => log.info(event, data ?? {}),
       }),
       defaultCommand: "bash",
@@ -408,7 +418,12 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     });
     await new Promise((r) => setTimeout(r, 2_000));
 
-    const result = await sshExec(sshPort, sshKey.private, requesterAcct.did, "echo SWC_GUEST_OK && cat /etc/hostname");
+    const result = await sshExec(
+      sshPort,
+      sshKey.private,
+      requesterAcct.did,
+      `echo SWC_GUEST_OK && cat /etc/hostname && cat ${COCORE_CONFIG_PATH_VM}`,
+    );
     log.info("ssh_result", { code: result.code, stdoutLen: result.stdout.length });
 
     const tail = `\nstdout: ${result.stdout.slice(-3000)}\nstderr: ${result.stderr.slice(-2000)}`;
@@ -421,8 +436,11 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
       lines.some((l) => l.length > 0 && !l.startsWith("{") && l !== "SWC_GUEST_OK"),
       `guest must also report its hostname.${tail}`,
     );
-    assert(guestContainers.size > 0, "the test must have observed the guest container");
-    assert(vmDestroyed || guestContainers.size > 0, "requester must submit vm.delete");
+    assert(
+      result.stdout.includes(CAPABILITY_SENTINEL),
+      `the capability's secret must land in the guest at ${COCORE_CONFIG_PATH_VM}.${tail}`,
+    );
+    assert(guestContainers.size > 0, "the test must have observed the guest container");    assert(vmDestroyed || guestContainers.size > 0, "requester must submit vm.delete");
 
     // Teardown is the last leg: the requester submits a signed vm.delete and the
     // bidder destroys the guest. Poll the runtime itself -- a log line saying so

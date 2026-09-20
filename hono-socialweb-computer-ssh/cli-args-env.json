@@ -128,6 +128,48 @@
       "type": "string",
       "description": "Comma-separated ATProto relay URLs for firehose bid and event discovery",
       "env": "RELAY_URL"
+    },
+    "app-did": {
+      "type": "string",
+      "description": "This deployment's own DID, i.e. the repo its dev.cocore.app.registration record lives in. Defaults to did:web:<public-origin host>. Without --public-origin there is no app PDS at all, since a did:web is resolved by fetching /.well-known/did.json from that origin.",
+      "env": "APP_DID"
+    },
+    "app-handle": {
+      "type": "string",
+      "description": "Handle to declare in the DID document's alsoKnownAs. Defaults to the public origin's hostname. The handle is proved separately by a _atproto.<handle> TXT record pointing at this DID.",
+      "env": "APP_HANDLE"
+    },
+    "app-pds-key-path": {
+      "type": "string",
+      "description": "Secp256k1 key signing the app repo. Defaults to <state-dir>/app-pds-private-key. Generated if missing; losing it makes every commit unverifiable.",
+      "env": "APP_PDS_KEY_PATH"
+    },
+    "app-pds-kv-path": {
+      "type": "string",
+      "description": "Deno KV backing the app repo. Defaults to <state-dir>/app-pds.kv",
+      "env": "APP_PDS_KV_PATH"
+    },
+    "app-pds-crawlers": {
+      "type": "string",
+      "description": "Comma-separated relay URLs to announce app repo writes to. Only needed if co/core reads the registration record off a relay rather than fetching it from the PDS.",
+      "env": "APP_PDS_CRAWLERS"
+    },
+    "cocore-api-base-url": {
+      "type": "string",
+      "description": "Base URL the co/core pairing endpoints hang off. cocore.dev/api and appview.cocore.dev serve the same backend.",
+      "env": "COCORE_API_BASE_URL",
+      "default": "https://cocore.dev/api"
+    },
+    "cocore-app-name": {
+      "type": "string",
+      "description": "Name co/core shows on its approval screen and in the user's key list",
+      "env": "COCORE_APP_NAME",
+      "default": "socialweb-computer-ssh"
+    },
+    "cocore-return-url": {
+      "type": "string",
+      "description": "Where co/core sends the browser back after approval. Its host must serve /.well-known/cocore-app.json naming this app's DID. Defaults to the public origin.",
+      "env": "COCORE_RETURN_URL"
     }
   }
 }

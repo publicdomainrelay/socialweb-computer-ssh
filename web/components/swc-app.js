@@ -2,6 +2,7 @@ import { completeLogin, startLogin, isLocalhost, pendingLogin } from '../lib/atp
 import { createPdsClient, clearSession, depositSession, loadSession, saveSession } from '../lib/pds.js';
 import { OAUTH_SCOPE } from '../generated/oauth-scope.js';
 import './swc-key-list.js';
+import './swc-pair.js';
 
 const RETURN_KEY = 'swc-return-to';
 
@@ -126,6 +127,7 @@ export class SwcApp extends HTMLElement {
           <div class="key-code mt-3">LC_MY_VAR=hello ssh ${this._esc(session.handle || session.userDid)}@${this._esc(sshHost)} "echo \$LC_MY_VAR"</div>
         </div>
         <swc-key-list id="keys"></swc-key-list>
+        <swc-pair id="pair"></swc-pair>
         <nav class="text-center mt-3" style="font-size:13px;">
           <a href="https://github.com/publicdomainrelay/socialweb-computer-ssh" target="_blank" rel="noopener" class="text-muted">Source Code</a>
         </nav>
@@ -136,6 +138,7 @@ export class SwcApp extends HTMLElement {
       this._renderLogin();
     });
     this.querySelector('#keys').start(client, session);
+    this.querySelector('#pair').start(session);
   }
 
   async _sshHost() {
