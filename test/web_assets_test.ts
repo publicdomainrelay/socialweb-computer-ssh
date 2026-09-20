@@ -40,22 +40,6 @@ Deno.test("the web app runs the flow itself rather than posting credentials to t
   assertEquals(pds.includes("depositSession"), true);
 });
 
-Deno.test("every page-side client that carries the session renews it", async () => {
-  // The refresh lives in one place and both clients must route through it. They
-  // did not, once: the pairing endpoints are this deployment's own routes rather
-  // than the account's PDS, so they were reached with a bare fetch -- and a page
-  // whose repo calls renewed their token while its pairing calls did not reported
-  // the session as expired the moment the access token aged out.
-  //
-  // Source-level because there is no seam to inject: these are browser modules
-  // that talk to same-origin routes, which Deno cannot resolve.
-  const pds = await read("lib/pds.js");
-  assertEquals(pds.includes("export async function withRefresh"), true);
-
-  const cocore = await read("lib/cocore-pair.js");
-  assertEquals(cocore.includes("withRefresh"), true, "the pairing client must renew the session too");
-});
-
 Deno.test("the deposited session names the client_id it was issued to", async () => {
   // A refresh token is bound to the client that obtained it, and the server has
   // no other way to learn which client that was: on loopback the page signs in

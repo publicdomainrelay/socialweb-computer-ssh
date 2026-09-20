@@ -50,10 +50,10 @@ export interface InProcessRequesterOptions {
    * prepare() mints its own keypair and mounts its own serve handle, and the
    * secrets capability holds that at module scope -- so one instance serves
    * exactly one contract, while this requester serves every connection from one
-   * process. Returning undefined runs the contract with no capabilities, which
-   * is what an account that never paired should get.
+   * process. Returning an empty list runs the contract with no capabilities,
+   * which is what an account that never paired should get.
    */
-  capabilityFor?: (did: string) => Promise<GuestCapability | undefined>;
+  capabilityFor?: (did: string) => Promise<GuestCapability[]>;
   log?: (event: string, data?: Record<string, unknown>) => void;
 }
 
@@ -122,7 +122,16 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
     error: (message: string, meta?: Record<string, unknown>) => log(message, meta ?? {}),
   };
   type Agent = Awaited<ReturnType<typeof createOAuthAgentFromSession>>;
-  const agents = new Map<string, Promise<Agent>>();
+  /**
+   * One agent per account, tagged with the refresh token it was built from.
+   *
+   * The tag is what makes a re-deposit take effect. The page holds the same
+   * session and refreshes it too, and every rotation invalidates any agent built
+   * from the previous token -- presenting that token is a replay, which the PDS
+   * answers by killing the whole session. So the cache is keyed by the token, not
+   * just by the account.
+   */
+  const agents = new Map<string, { refreshJwt: string; agent: Promise<Agent> }>();
   type RequesterPDS = Awaited<ReturnType<typeof createRequesterPDS>>;
   const requesters = new Map<string, Promise<RequesterPDS>>();
 
@@ -171,27 +180,41 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
    * connections safe: they share one refresh lock instead of racing.
    */
   function agentFor(did: string): Promise<Agent> {
-    let agent = agents.get(did);
-    if (!agent) {
-      agent = (async () => {
-        const stored = await opts.sessionStore.get(did);
-        if (!stored) throw new Error(`no oauth session stored for ${did}`);
-        // A refresh token is bound to the client_id that obtained it, so the
-        // session's own client_id wins over the operator's configured one. The
-        // session carries it because that is the only place it is knowable: on
-        // loopback the page signs in with a `http://localhost?...` virtual
-        // metadata document, which the server cannot reconstruct.
-        const clientId = stored.clientId ?? opts.oauthClientId;
-        return await createOAuthAgentFromSession(stored, {
-          clientId,
-          // The helper rebuilds the session from the token response, which does
-          // not echo the client_id, so re-attach it or a restart would lose it.
-          saveSession: (updated) => opts.sessionStore.set(did, { ...updated, clientId }),
-        });
-      })();
-      agents.set(did, agent);
-    }
-    return agent;
+    return (async () => {
+      const stored = await opts.sessionStore.get(did);
+      if (!stored) throw new Error(`no oauth session stored for ${did}`);
+
+      const cached = agents.get(did);
+      if (cached && cached.refreshJwt === stored.refreshJwt) return await cached.agent;
+
+      if (cached) {
+        // Retire the superseded agent: its keepalive would otherwise go on
+        // refreshing with a token the store has moved past, which is the replay
+        // this cache key exists to prevent.
+        agents.delete(did);
+        void cached.agent
+          .then((a) => (a as unknown as { dispose?: () => void }).dispose?.())
+          .catch(() => {});
+      }
+
+      // A refresh token is bound to the client_id that obtained it, so the
+      // session's own client_id wins over the operator's configured one. The
+      // session carries it because that is the only place it is knowable: on
+      // loopback the page signs in with a `http://localhost?...` virtual
+      // metadata document, which the server cannot reconstruct.
+      const clientId = stored.clientId ?? opts.oauthClientId;
+      const agent = createOAuthAgentFromSession(stored, {
+        clientId,
+        // The helper rebuilds the session from the token response, which does
+        // not echo the client_id, so re-attach it or a restart would lose it.
+        saveSession: (updated) => opts.sessionStore.set(did, { ...updated, clientId }),
+      });
+      agents.set(did, { refreshJwt: stored.refreshJwt, agent });
+      agent.catch(() => {
+        if (agents.get(did)?.agent === agent) agents.delete(did);
+      });
+      return await agent;
+    })();
   }
 
   function providerFor(io: CommandIo): SshSessionProvider {
@@ -220,11 +243,11 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
         // Whatever it carries is a convenience, and letting a failed read here
         // throw would turn a provisionable run into "provisioning failed" on
         // stderr -- a worse outcome than running without it.
-        const capability = await opts.capabilityFor?.(account.did)
+        const capabilities = await opts.capabilityFor?.(account.did)
           .catch((err) => {
             log("capability_build_failed", { did: account.did, error: String(err) });
-            return undefined;
-          });
+            return [] as GuestCapability[];
+          }) ?? [];
 
         eventStreams = createDefaultATProtoEventStreamsClient({
           additionalRelays: opts.relayUrls ?? [],
@@ -243,7 +266,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
           policy: { name: policy, args: policyArgs },
           guestHostAliases: opts.guestHostAliases,
           rbac: opts.rbac ?? false,
-          capabilities: capability ? [capability] : [],
+          capabilities,
           logger,
         });
 
@@ -289,7 +312,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
     },
 
     async shutdown(): Promise<void> {
-      for (const settled of await Promise.allSettled([...agents.values()])) {
+      for (const settled of await Promise.allSettled([...agents.values()].map((e) => e.agent))) {
         if (settled.status === "fulfilled") (settled.value as unknown as { dispose?: () => void }).dispose?.();
       }
       agents.clear();

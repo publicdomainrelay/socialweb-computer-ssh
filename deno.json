@@ -4,6 +4,7 @@
     "./lib/common/socialweb-computer-common",
     "./lib/json-file-store-fs",
     "./lib/key-file-fs",
+    "./lib/cloud-init-plugin-pi",
     "./lib/abc/socialweb-computer",
     "./lib/socialweb-computer-atproto",
     "./lib/socialweb-computer-oauth-atproto",
@@ -44,6 +45,7 @@
     "@publicdomainrelay/container-backend-container": "../hono-compute-provider/lib/container-backend-container/mod.ts",
     "@publicdomainrelay/guest-capability-abc": "../atproto-market/lib/abc/guest-capability/mod.ts",
     "@publicdomainrelay/guest-capability-secrets": "../atproto-market/lib/guest-capability-secrets/mod.ts",
+    "@publicdomainrelay/cloud-init-common": "../atproto-market/lib/common/cloud-init-common/mod.ts",
     "@publicdomainrelay/secrets-common": "../atproto-market/lib/common/secrets-common/mod.ts",
     "@publicdomainrelay/tls-localhost": "../typescript-helpers/lib/tls-localhost/mod.ts"
   }

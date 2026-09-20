@@ -16,6 +16,7 @@ import { createRepoFactory } from "@publicdomainrelay/hono-factory-atproto-repo-
 import { createJsonFileStore } from "@publicdomainrelay/json-file-store-fs";
 import { loadOrCreateKeyHex } from "@publicdomainrelay/key-file-fs";
 import { createSecretsCapability } from "@publicdomainrelay/guest-capability-secrets";
+import { createPiCocoreModule } from "@publicdomainrelay/cloud-init-plugin-pi";
 import { cocoreSecretEntry, createCocorePairing } from "@publicdomainrelay/socialweb-computer-cocore-http";
 import { createCocorePairFactory } from "@publicdomainrelay/hono-factory-socialweb-computer-cocore";
 import {
@@ -113,11 +114,17 @@ const runner = createInProcessRequester({
   oauthClientId: options.oauthClientId as string | undefined,
   capabilityFor: async (did) => {
     const paired = await cocorePairing.token(did);
-    if (!paired) return undefined;
-    return createSecretsCapability({
-      secrets: [cocoreSecretEntry(paired.token)],
-      logger: pdsLogger,
-    });
+    if (!paired) return [];
+    return [
+      // The agent, so there is something in the guest to spend the token on. A
+      // module value rather than a registered id: nothing in cloud-init-common
+      // knows what pi is.
+      { id: "pi-cocore", userDataModule: createPiCocoreModule() },
+      createSecretsCapability({
+        secrets: [cocoreSecretEntry(paired.token)],
+        logger: pdsLogger,
+      }),
+    ];
   },
   log,
 });

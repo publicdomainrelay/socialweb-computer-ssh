@@ -392,10 +392,12 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
         guestHostAliases: [`${gateway} relay.localhost`],
         vmReadyTimeoutSec: 180,
         capabilityFor: () =>
-          Promise.resolve(createSecretsCapability({
-            secrets: [cocoreSecretEntry(CAPABILITY_SENTINEL)],
-            logger: log,
-          })),
+          Promise.resolve([
+            createSecretsCapability({
+              secrets: [cocoreSecretEntry(CAPABILITY_SENTINEL)],
+              logger: log,
+            }),
+          ]),
         log: (event, data) => log.info(event, data ?? {}),
       }),
       defaultCommand: "bash",

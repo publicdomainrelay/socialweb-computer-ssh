@@ -37,12 +37,6 @@ export interface OAuthSessionData {
    * without the operator having to configure what that was.
    */
   clientId?: string;
-  /**
-   * The authorization server's token endpoint, so a session can refresh without
-   * rediscovering it. atproto's authorization server is the account's own PDS,
-   * and the browser reaches it directly rather than through this server.
-   */
-  tokenEndpoint?: string;
 }
 
 export interface PresentedKey {

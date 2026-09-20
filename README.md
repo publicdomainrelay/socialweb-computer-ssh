@@ -85,14 +85,15 @@ the blob is proved against its own PDS with a live DPoP-bound
 confirms is the one it is stored under. A deposit therefore costs a real round
 trip, and a blob claiming someone else's DID is stored under its own.
 
-The session renews itself. An access token outlives neither the page nor the
-tab, so a session restored from storage has usually expired — and the server
-proves a deposit with a live PDS call of its own, so it needs the token to
-actually be good. Renewal is one `refresh_token` grant in `lib/pds.js`, held
-single-flight because the refresh token rotates and a second concurrent refresh
-would spend it twice. Every page-side client that carries the session routes
-through it; one that does not is one that reports the session as expired the
-moment the token ages out.
+The page does **not** renew its own session, and adding a refresh here is not an
+improvement. The server holds a copy of the same session and refreshes it, and
+there is one refresh token between them: whoever rotates second presents a token
+the first already spent, and the PDS answers a replay by killing the session
+outright — a dead door for an account that did nothing wrong. So the server is
+the only rotator, which is also the right one, because it is the one that has to
+survive a long-running VM. When the page's token ages out it says so and asks for
+a sign-in, which deposits a fresh session and is the one recovery that cannot
+race anything.
 
 ## The session handoff
 
@@ -471,9 +472,6 @@ deno task test:live   # provisions a real VM; needs a container runtime
 | `test/oauth_web_test.ts` | The web half: the client metadata document served from the configured scope, a session stored only under the DID its PDS confirmed, and refusals for an unconfirmed session, a non-object body, and an oversized deposit. |
 | `test/web_assets_test.ts` | The page ships what the server serves, takes its scope from the generated module rather than a literal, runs the OAuth flow itself, and sends the `client_id` its session was issued to. |
 | `test/session_store_test.ts` | The session store: a corrupt file is quarantined rather than silently emptied, and the store is written owner-only. |
-| `test/web_refresh_test.ts` | The page's token refresh, driven against a fake PDS: an expired access token is renewed and the call retried, the rotated pair is written back, concurrent calls share one refresh (the token rotates, so a second would spend it twice), the endpoint is discovered once when the session predates the field, and a failed refresh surfaces instead of looping. |
-| `test/cocore_pair_test.ts` | Pairing against a fake co/core: the `deviceId` never leaves the process, a pending poll stores nothing, an approved one stores the key owner-only, a denied one leaves the account able to pair again, and the session-key hedge resolves all three spellings. |
-| `test/app_pds_test.ts` | The app PDS: the DID document is built from the host it is served at, `alsoKnownAs` is absent rather than empty when unset, and `readOnly` takes `createAccount` and `getServiceAuth` off the wire while leaving reads open and unauthenticated writes refused. |
 | `test/live_market_test.ts` | **Live.** The whole path against real infrastructure: an ephemeral OAuth-PDS whose session injector mints the requester's session, a fake PLC, a dispatcher, an ephemeral atproto-relay, a bidder subprocess running the local container compute provider, and a guest provisioned from cloud-init. The test registers the SSH key as a `requester_associate` record, connects over SSH, and asserts the command ran in the guest, a capability's secret landed in it, and the guest was destroyed. |
 
 `live_market_test.ts` needs a container runtime (Apple `container` on darwin,
