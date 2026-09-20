@@ -3,6 +3,12 @@ import type { OAuthSessionData } from "@publicdomainrelay/socialweb-computer-com
 
 export interface SessionVerifierOptions {
   timeoutMs?: number;
+  /**
+   * Why a deposit was refused. Every failure below is a refusal rather than an
+   * error, which makes a real rejection indistinguishable from a bug without
+   * this -- the caller only ever sees a 401.
+   */
+  log?: (reason: string, data?: Record<string, unknown>) => void;
 }
 
 const LOOPBACK = ["127.0.0.1", "[::1]", "::1", "localhost"];
@@ -26,14 +32,27 @@ function usablePds(raw: string): string | null {
 
 export function createAtprotoSessionVerifier(opts: SessionVerifierOptions = {}): SessionVerifier {
   const timeoutMs = opts.timeoutMs ?? 15_000;
+  const log = opts.log ?? (() => {});
 
   return {
     async verify(session: OAuthSessionData): Promise<VerifiedSession | null> {
-      if (typeof session?.userDid !== "string" || !session.userDid.startsWith("did:")) return null;
-      if (typeof session.accessJwt !== "string" || !session.accessJwt) return null;
-      if (typeof session.dpopPrivateJwk !== "object" || session.dpopPrivateJwk === null) return null;
+      if (typeof session?.userDid !== "string" || !session.userDid.startsWith("did:")) {
+        log("not_a_did");
+        return null;
+      }
+      if (typeof session.accessJwt !== "string" || !session.accessJwt) {
+        log("no_access_jwt");
+        return null;
+      }
+      if (typeof session.dpopPrivateJwk !== "object" || session.dpopPrivateJwk === null) {
+        log("no_dpop_key");
+        return null;
+      }
       const pds = usablePds(String(session.pds ?? ""));
-      if (!pds) return null;
+      if (!pds) {
+        log("unusable_pds", { pds: String(session.pds ?? "") });
+        return null;
+      }
 
       let key: CryptoKey;
       try {
@@ -45,11 +64,20 @@ export function createAtprotoSessionVerifier(opts: SessionVerifierOptions = {}):
           false,
           ["sign"],
         );
-      } catch {
+      } catch (err) {
+        log("dpop_key_import_failed", { err: String(err) });
         return null;
       }
 
       const endpoint = `${pds}/xrpc/com.atproto.server.getSession`;
+      // RFC 9449: a proof presented alongside an access token must carry `ath`,
+      // the base64url SHA-256 of that token. Without it the PDS answers
+      // 401 invalid_dpop_proof "ath mismatch".
+      const ath = b64urlBytes(
+        new Uint8Array(
+          await crypto.subtle.digest("SHA-256", new TextEncoder().encode(session.accessJwt)),
+        ),
+      );
       const call = async (nonce?: string | null): Promise<Response> => {
         const header = {
           typ: "dpop+jwt",
@@ -66,6 +94,7 @@ export function createAtprotoSessionVerifier(opts: SessionVerifierOptions = {}):
           htm: "GET",
           htu: endpoint,
           iat: Math.floor(Date.now() / 1000),
+          ath,
         };
         if (nonce) payload.nonce = nonce;
         const signingInput = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(payload))}`;
@@ -89,11 +118,22 @@ export function createAtprotoSessionVerifier(opts: SessionVerifierOptions = {}):
           const fresh = res.headers.get("DPoP-Nonce");
           if (fresh) res = await call(fresh);
         }
-        if (!res.ok) return null;
+        if (!res.ok) {
+          log("get_session_not_ok", {
+            status: res.status,
+            pds,
+            body: (await res.text()).slice(0, 300),
+          });
+          return null;
+        }
         const body = await res.json() as { did?: string; handle?: string };
-        if (body.did !== session.userDid) return null;
+        if (body.did !== session.userDid) {
+          log("did_mismatch", { claimed: session.userDid, pdsSaid: body.did });
+          return null;
+        }
         return { did: body.did, handle: body.handle ?? body.did };
-      } catch {
+      } catch (err) {
+        log("get_session_threw", { pds, err: String(err) });
         return null;
       }
     },

@@ -112,7 +112,8 @@ The policy sandbox runs in a Worker **in this process**, so the server needs
 deno task start
 ```
 
-That is the whole thing. The SSH server listens on `127.0.0.1:2222`, the web app
+That is the whole thing. The SSH server listens on `127.0.0.1:2222` — the
+development default, chosen so it needs no privilege — and the web app
 on `127.0.0.1:8787`, and state (session store, SSH host key) lands in
 `.socialweb-computer-ssh/`.
 
@@ -151,6 +152,126 @@ be the exact URL the authorization server fetches:
 ```sh
 deno task start -- --oauth-client-id https://ssh.example.com/oauth-client-metadata.json
 ```
+
+## Deploy
+
+```sh
+./scripts/deploy.sh
+```
+
+Deploys to `root@socialweb.computer`. The same script runs against any other host
+or domain:
+
+```sh
+SSH_TARGET=root@other.example ORIGIN=ssh.other.example ./scripts/deploy.sh
+```
+
+| Variable | Default | Notes |
+|---|---|---|
+| `SSH_TARGET` | `root@socialweb.computer` | where to deploy |
+| `ORIGIN` | `ssh.socialweb.computer` | the public name. Drives the Caddy site, the `client_id` the page signs in with, and the banner |
+| `SERVICE_NAME` | `socialweb-computer-ssh` | systemd unit name. Two domains on one host need distinct names |
+| `SERVICE_USER` | `swc` | the service account |
+| `STATE_DIR_HOST` | `/var/lib/$SERVICE_NAME` | session store, SSH host key, requester key |
+| `DOOR_SSH_PORT` | `22` | what this service listens on |
+| `HOST_SSHD_PORT` | `1997` | where the host's own sshd is moved to |
+| `INGRESS_PROXY_HOST` | `xrpc.fedproxy.com` | relay dispatcher the requester registers with |
+| `SSH_PUBLIC_HOST` | `socialweb.computer` | name shown in the page's connect example. See below |
+
+### More than one name reaches the door
+
+`ssh.socialweb.computer` and `socialweb.computer` resolve to the same address, so
+both reach this service on port 22 — the apex included. The apex is the nicer
+thing to type, so it is what the page offers:
+
+```sh
+ssh your-handle.example.com@socialweb.computer
+```
+
+Which name appears is the server's to decide, not the page's: the page would
+otherwise offer whichever name it happened to be served from. The door serves
+`GET /connect.json` → `{"sshHost":"…"}`, taken from `--ssh-public-host`, and falls
+back to the public origin's hostname when that is unset.
+
+Two caveats that follow from sharing the address. `socialweb.computer` is also
+the static site, so the apex is both a website and an SSH door — different ports,
+no conflict. And a client's `known_hosts` entry is per hostname, so the two names
+are remembered separately even though they are the same server.
+
+The first connection to the apex will also warn that the host identification has
+changed:
+
+```
+WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!
+```
+
+That is expected on this host, not an attack. Port 22 of `socialweb.computer` used
+to be the host's own sshd, so the name already had a key recorded; the door now
+serves that port and presents its own. Clearing the stale entry is the fix:
+
+```sh
+ssh-keygen -R socialweb.computer
+```
+
+are remembered separately even though they are the same server.
+
+### What lands on the host
+
+- `/opt/org-root` — the whole org root, tarred over ssh. This service imports its
+  siblings by relative path (`../typescript-helpers`, `../atproto-market`, …), so
+  it cannot ship as a subtree, and `deno compile` is no better: `import.meta.url`
+  resolves into the compile VFS and the local-fs package store then scans nothing.
+  `social-web-computer`'s deploy ships the same tree to the same place.
+- `/var/lib/socialweb-computer-ssh` — state, owned by the service account, mode `700`.
+- `/etc/systemd/system/socialweb-computer-ssh.service` — runs as `swc`, never root,
+  under `ProtectSystem=strict`, with exactly one capability:
+  `CAP_NET_BIND_SERVICE`, for the privileged bind on 22. Its working directory is
+  the state dir, because the fulfillment policy's gha-lite sandbox creates
+  `.cache`/`.tempdir` in `Deno.cwd()` and a read-only cwd makes the policy reject.
+- `/etc/systemd/system/ssh.socket.d/10-port.conf` — the host's sshd port.
+- `/etc/caddy/sites/<ORIGIN>.caddy` — a drop-in rather than the main `Caddyfile`,
+  which `social-web-computer`'s deploy owns and replaces wholesale. The deploy
+  appends `import /etc/caddy/sites/*.caddy` to the main file only if it is absent,
+  backing it up first.
+
+The web half is behind TLS because the page's `client_id` has to be an https URL
+with no port: the authorization server fetches that document.
+
+### Taking port 22
+
+So that people can `ssh handle@host` without `-p`. The host's own sshd keeps
+working on `HOST_SSHD_PORT`.
+
+The listener is **socket-activated**, so the port lives in `ssh.socket` and not in
+`sshd_config` — adding `Port 1997` to `sshd_config` looks right and changes
+nothing.
+
+The switch is staged, because the deploy's own transport is the port being moved:
+
+1. Stage `HOST_SSHD_PORT` **alongside** the current port and reload the socket.
+   This ends the deploy's own SSH session — `ssh.service` is `RequiredBy=ssh.socket`,
+   so restarting the socket stops the sshd carrying the script. That failure is
+   swallowed; the check below is the real gate.
+2. Verify `HOST_SSHD_PORT` answers, from the deploying machine. If it does not, the
+   script stops with the host's sshd untouched and still reachable.
+3. Phase two runs in a **detached transient unit**, for the same reason: it restarts
+   the socket the deploy session depends on. Run inline it would die halfway —
+   after dropping the port but before starting anything on it. It arms a five-minute
+   rollback, releases the port, starts the service, and configures Caddy.
+4. Verify the service is up, then disarm the rollback.
+
+### Re-running
+
+Phase one is skipped when the door already holds `DOOR_SSH_PORT`. Re-adding that
+port to sshd would put two listeners on one port; `ssh.socket` would fail to bind,
+and because the unit holds *every* sshd port, its failure would take
+`HOST_SSHD_PORT` down with it — losing the only way into the host, with the
+rollback not yet armed because that happens in phase two. That is not
+hypothetical: it is what an earlier version of this script did. Hence the guard,
+and hence this paragraph.
+
+The script also probes `HOST_SSHD_PORT` then `DOOR_SSH_PORT` for its own transport,
+so the same invocation works against a host that has not been switched yet.
 
 ## `LC_` environment variables
 

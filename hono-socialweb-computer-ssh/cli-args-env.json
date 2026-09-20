@@ -14,6 +14,11 @@
       "env": "SSH_HOSTNAME",
       "default": "127.0.0.1"
     },
+    "ssh-public-host": {
+      "type": "string",
+      "description": "Hostname shown in the connect example. Defaults to the public origin's hostname. Set it when another name reaches this door, e.g. an apex domain that resolves to the same address.",
+      "env": "SSH_PUBLIC_HOST"
+    },
     "http-port": {
       "type": "number",
       "description": "TCP port for the OAuth HTTP server",
@@ -77,19 +82,25 @@
       "type": "number",
       "description": "Concurrent provisioning runs allowed across all clients; further exec requests are refused",
       "env": "MAX_SESSIONS",
-      "default": 8
+      "default": 1000
     },
     "sessions-per-account": {
       "type": "number",
       "description": "Concurrent provisioning runs allowed for one account",
       "env": "SESSIONS_PER_ACCOUNT",
-      "default": 2
+      "default": 1000
     },
     "max-connections": {
       "type": "number",
       "description": "Concurrent SSH connections accepted",
       "env": "MAX_CONNECTIONS",
-      "default": 200
+      "default": 10000
+    },
+    "auth-timeout-sec": {
+      "type": "number",
+      "description": "Seconds an unauthenticated connection may stay open. Must outlast a first connection pausing at the host-key prompt and reading the banner.",
+      "env": "AUTH_TIMEOUT_SEC",
+      "default": 120
     },
     "session-max-sec": {
       "type": "number",
@@ -101,6 +112,11 @@
       "type": "string",
       "description": "Fallback client_id to refresh as when a deposited session does not carry its own. Must be the exact URL the authorization server fetches, e.g. https://<host>/oauth-client-metadata.json. Normally unnecessary: the page sends the client_id its session was issued to.",
       "env": "OAUTH_CLIENT_ID"
+    },
+    "public-origin": {
+      "type": "string",
+      "description": "Public origin this deployment is reached at, e.g. https://ssh.example.com. Set it when the app sits behind a TLS terminator: the client_id must be an https URL with no port, and a proxied request arrives as plain http. Omit on loopback.",
+      "env": "PUBLIC_ORIGIN"
     },
     "ingress-proxy-host": {
       "type": "string",

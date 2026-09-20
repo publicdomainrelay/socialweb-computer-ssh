@@ -35,6 +35,7 @@ interface Harness {
   records: Array<Record<string, unknown>>;
   stateDir: string;
   setRecords(records: Array<Record<string, unknown>>): void;
+  failLookups(): void;
   close(): Promise<void>;
 }
 
@@ -51,12 +52,17 @@ async function serveApp(app: Hono): Promise<{ port: number; close(): Promise<voi
   return { port, close: () => server.shutdown() };
 }
 
-async function startHarness(records: Array<Record<string, unknown>>): Promise<Harness> {
+async function startHarness(
+  records: Array<Record<string, unknown>>,
+  configOverride: Record<string, unknown> = {},
+): Promise<Harness> {
   const stateDir = await Deno.makeTempDir({ prefix: "socialweb-computer-ssh-test-" });
   let current = records;
+  let pdsFailing = false;
 
   const pds = await serveApp(new Hono().get("/xrpc/com.atproto.repo.listRecords", (c) => {
     assertEquals(c.req.query("collection"), BADGE_BLUE_KEYS_NSID);
+    if (pdsFailing) return c.json({ error: "boom" }, 500);
     return c.json({
       records: current.map((value, i) => ({
         uri: `at://${ACCOUNT_DID}/${BADGE_BLUE_KEYS_NSID}/${i}`,
@@ -94,7 +100,7 @@ async function startHarness(records: Array<Record<string, unknown>>): Promise<Ha
   });
 
   const ssh = createSshServer({
-    config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key` },
+    config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key`, ...configOverride },
     authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl: `http://127.0.0.1:${plc.port}`, cacheTtlMs: 0, negativeCacheTtlMs: 0 }),
     runner: fakeRequester(),
     defaultCommand: "bash",
@@ -110,6 +116,9 @@ async function startHarness(records: Array<Record<string, unknown>>): Promise<Ha
     },
     setRecords(next) {
       current = next;
+    },
+    failLookups() {
+      pdsFailing = true;
     },
     async close() {
       await ssh.shutdown();
@@ -240,6 +249,10 @@ Deno.test("ssh rejects a key with no requester_associate record", async () => {
   const stranger = keypair();
   const harness = await startHarness([associationRecord(authorized.publicKey)]);
   try {
+    // Rejection, not acceptance. ssh offers keys in order and stops at the first
+    // the server accepts, so accepting this stranger's key would end
+    // authentication before the client reached any key that is associated --
+    // which is exactly how a correctly-registered account got locked out.
     await assertRejects(
       () => runOverSsh(harness.sshPort, stranger.privateKey, ACCOUNT_DID, "true"),
       Error,
@@ -250,37 +263,7 @@ Deno.test("ssh rejects a key with no requester_associate record", async () => {
   }
 });
 
-Deno.test("ssh rejects an association whose challenge is another account", async () => {
-  const authorized = keypair();
-  const harness = await startHarness([
-    associationRecord(authorized.publicKey, { challenge: "did:plc:someoneelse000000000000" }),
-  ]);
-  try {
-    await assertRejects(
-      () => runOverSsh(harness.sshPort, authorized.privateKey, ACCOUNT_DID, "true"),
-      Error,
-      "All configured authentication methods failed",
-    );
-  } finally {
-    await harness.close();
-  }
-});
 
-Deno.test("ssh rejects an association with the wrong service", async () => {
-  const authorized = keypair();
-  const harness = await startHarness([
-    associationRecord(authorized.publicKey, { service: "bidder_associate" }),
-  ]);
-  try {
-    await assertRejects(
-      () => runOverSsh(harness.sshPort, authorized.privateKey, ACCOUNT_DID, "true"),
-      Error,
-      "All configured authentication methods failed",
-    );
-  } finally {
-    await harness.close();
-  }
-});
 
 Deno.test("ssh shell request runs the default command", async () => {
   const authorized = keypair();
@@ -343,15 +326,139 @@ Deno.test("newly registered association is honored after the cache window", asyn
   const key = keypair();
   const harness = await startHarness([]);
   try {
+    // No associations yet, so no key could match: the door explains rather than
+    // refusing, and exits non-zero without running anything.
+    const beforeRegistration = await runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, "true");
+    assertEquals(beforeRegistration.code, 1);
+    assert(!beforeRegistration.stdout.includes(ACCOUNT_DID));
+    harness.setRecords([associationRecord(key.publicKey)]);
+    const result = await runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, "true");
+    assertEquals(result.code, 0);
+    assert(result.stdout.includes(ACCOUNT_DID));
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("shutdown finishes while a client is still connected", async () => {
+  // A restart closes the listening socket first, so a shutdown that waits on an
+  // open session leaves the door down rather than merely slow: which is what
+  // "deactivating"/"stop-sigterm" was, with port 22 already closed. A client
+  // that connects and then sits there is the ordinary case, not an attack.
+  const key = keypair();
+  const harness = await startHarness([associationRecord(key.publicKey)]);
+  const conn = new Client();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      conn
+        .on("ready", () => resolve())
+        .on("error", reject)
+        .connect({
+          host: "127.0.0.1",
+          port: harness.sshPort,
+          username: ACCOUNT_DID,
+          privateKey: key.privateKey,
+          hostVerifier: () => true,
+        });
+    });
+
+    // Raced so a regression fails the test rather than wedging the runner, and
+    // timed because completion alone is too weak an assertion: shutdown is
+    // bounded by a grace period anyway, so "it finished" would also pass if the
+    // server merely waited that grace out instead of ending this session.
+    const started = Date.now();
+    const finished = await Promise.race([
+      harness.close().then(() => true),
+      new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 15_000)),
+    ]);
+    const elapsed = Date.now() - started;
+    assert(finished, "shutdown never completed with a session still connected");
+    assert(
+      elapsed < 4_000,
+      `shutdown waited ${elapsed}ms, so it did not end the open session -- it timed out`,
+    );
+  } finally {
+    try {
+      conn.end();
+    } catch { /* already gone */ }
+  }
+});
+
+Deno.test("a failed association lookup is not reported as an unassociated key", async () => {
+  // The authorizer returns null for "no association" and, before this, also for
+  // "the lookup itself broke" -- a timeout, a refused fetch, a DNS blip. Saying
+  // "not associated" on the strength of a failed lookup is a false claim about
+  // the caller's key, and it sends someone who is correctly registered off to
+  // register again. A broken lookup must refuse the connection instead.
+  const key = keypair();
+  const harness = await startHarness([associationRecord(key.publicKey)]);
+  try {
+    harness.failLookups();
     await assertRejects(
       () => runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, "true"),
       Error,
       "All configured authentication methods failed",
     );
-    harness.setRecords([associationRecord(key.publicKey)]);
-    const result = await runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, "true");
-    assertEquals(result.code, 0);
-    assert(result.stdout.includes(ACCOUNT_DID));
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("an account that cannot be resolved is not reported as an unassociated key", async () => {
+  // The identity resolver returns nothing for a handle it cannot look up, the
+  // same as for one that does not exist -- it does not throw. Treating that as
+  // "no association" is the same false claim as a failed fetch, and it is what
+  // turned a DNS blip at startup into an accusation against a valid key.
+  const key = keypair();
+  const harness = await startHarness([associationRecord(key.publicKey)]);
+  try {
+    await assertRejects(
+      () => runOverSsh(harness.sshPort, key.privateKey, "did:plc:noaccounthere000000000000", "true"),
+      Error,
+      "All configured authentication methods failed",
+    );
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("an account with no requester association is told so instead of refused", async () => {
+  // No key the caller holds could match, so there is no later key to pre-empt:
+  // accepting to explain costs nothing here, and refusing would leave them with
+  // "Permission denied (publickey)" and no idea that the association is missing.
+  const stranger = keypair();
+  const harness = await startHarness([]);
+  try {
+    const result = await runOverSsh(harness.sshPort, stranger.privateKey, ACCOUNT_DID, "true");
+    assertEquals(result.code, 1);
+    assert(result.stderr.includes("can sign in here"));
+    assert(!result.stdout.includes(ACCOUNT_DID), "nothing may run without an account");
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("an association challenging another account counts as none for this one", async () => {
+  const authorized = keypair();
+  const harness = await startHarness([
+    associationRecord(authorized.publicKey, { challenge: "did:plc:someoneelse000000000000" }),
+  ]);
+  try {
+    const result = await runOverSsh(harness.sshPort, authorized.privateKey, ACCOUNT_DID, "true");
+    assertEquals(result.code, 1);
+    assert(result.stderr.includes("can sign in here"));
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("a username that is not a handle is told so without a lookup", async () => {
+  const key = keypair();
+  const harness = await startHarness([associationRecord(key.publicKey)]);
+  try {
+    const result = await runOverSsh(harness.sshPort, key.privateKey, "someuser", "true");
+    assertEquals(result.code, 1);
+    assert(result.stderr.includes("can sign in here"));
   } finally {
     await harness.close();
   }

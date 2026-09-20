@@ -4,7 +4,7 @@ import { applyOAuthAgentToRequesterPDS, createRequesterPDS, createSshSessionProv
 import type { RequesterPDS, SshSessionProvider } from "@publicdomainrelay/requester-abc";
 import type { SessionStore } from "@publicdomainrelay/socialweb-computer-oauth-session-fs";
 import type { CommandIo, ComputeCommandRunner } from "@publicdomainrelay/socialweb-computer-abc";
-import type { ServeHandle } from "@publicdomainrelay/serve";
+import { createServe } from "@publicdomainrelay/serve";
 import type { AuthorizedAccount } from "@publicdomainrelay/socialweb-computer-common";
 import { policyFromEnv, renderExecCommand, vmNameFromEnv } from "@publicdomainrelay/socialweb-computer-common";
 import { pollGuestReady, runSessionOverTunnel } from "./bridge.ts";
@@ -20,8 +20,6 @@ export interface InProcessRequesterOptions {
    * DID is registered once rather than per run.
    */
   requesterKeyPath: string;
-  /** Mounts the requester's own XRPC routes; the run is firehose-driven. */
-  serve: ServeHandle;
   plcDirectoryUrl?: string;
   ingressProxyHost?: string;
   relayUrls?: string[];
@@ -52,6 +50,57 @@ export interface InProcessRequester extends ComputeCommandRunner {
 
 const encoder = new TextEncoder();
 
+/**
+ * What to tell a client whose command never ran.
+ *
+ * A run can stop short in ways that are nobody's error and are invisible from
+ * the client -- no bidder online, or a policy no bidder satisfies, both look
+ * like the connection simply closing. The reason is on stderr because that is
+ * all the client sees besides the exit status.
+ */
+export function explainNoSession(
+  outcome: { event?: string; error?: string; sshReady?: boolean },
+  ctx: { policy: string; bidWindowSec: unknown; vmReadyTimeoutSec?: number },
+): string {
+  const window = typeof ctx.bidWindowSec === "number" ? `${ctx.bidWindowSec}s` : "the bid window";
+  const lines: string[] = [];
+
+  if (outcome.event === "no_bids") {
+    lines.push(
+      `No bids arrived within ${window}, so no VM was provisioned and nothing ran.`,
+      "",
+      "Worth checking:",
+      `  - LC_POLICY_BID_WINDOW_SEC (currently ${ctx.bidWindowSec ?? "default"}) gives bidders more time.`,
+      `  - LC_POLICY (currently ${ctx.policy}) decides which bids are acceptable; a policy no`,
+      "    bidder satisfies looks exactly like this.",
+      "  - whether any bidder is online for this market.",
+    );
+  } else if (outcome.event === "policy_rejected") {
+    lines.push(
+      "A bid won, but the fulfillment policy rejected it, so no VM was provisioned.",
+    );
+    if (outcome.error) lines.push(`  ${outcome.error}`);
+    lines.push(
+      "",
+      `Worth checking LC_POLICY (currently ${ctx.policy}) and LC_POLICY_ARGS.`,
+    );
+  } else if (outcome.sshReady === false) {
+    lines.push(
+      `A VM was provisioned but its SSH did not come up within ${ctx.vmReadyTimeoutSec ?? "the"} seconds,`,
+      "so nothing ran.",
+    );
+  } else {
+    lines.push(
+      `Provisioning did not complete (${outcome.event ?? "unknown event"}).`,
+    );
+    if (outcome.error) lines.push(`  ${outcome.error}`);
+  }
+
+  return lines.join("\n") + "\n";
+}
+
+
+
 /** Load the requester's private key hex, generating and persisting one on first use. */
 async function requesterKeyHex(path: string): Promise<string> {
   const existing = await Deno.readTextFile(path).then((s) => s.trim()).catch(() => "");
@@ -76,6 +125,44 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
   };
   type Agent = Awaited<ReturnType<typeof createOAuthAgentFromSession>>;
   const agents = new Map<string, Promise<Agent>>();
+  type RequesterPDS = Awaited<ReturnType<typeof createRequesterPDS>>;
+  const requesters = new Map<string, Promise<RequesterPDS>>();
+
+  /**
+   * One requester per account, built once and reused.
+   *
+   * It gets its own serve handle rather than sharing the web server's. Mounting
+   * onto the web app fails on the second connection -- Hono freezes its router
+   * once a request has been dispatched, and the requester mounts long after the
+   * server began serving, so `serve.app.route()` throws "Can not add a route
+   * since the matcher is already built". One serve per requester is also what
+   * the CLI does, one process per run.
+   */
+  function requesterFor(did: string): Promise<RequesterPDS> {
+    let entry = requesters.get(did);
+    if (!entry) {
+      entry = (async () => {
+        const agent = await agentFor(did);
+        const requesterServe = createServe({ logger, tcp: { addr: "127.0.0.1", port: 0 } });
+        const pds = await createRequesterPDS({
+          logger,
+          serve: requesterServe,
+          privateKeyHex: await requesterKeyHex(opts.requesterKeyPath),
+          plcDirectoryUrl: plcUrl,
+          ingressProxyHost: opts.ingressProxyHost,
+          label: "socialweb-computer-ssh",
+        });
+        // The requester's own repo has to be reachable: the fulfillment policy
+        // reads records back through its ingress while deciding.
+        await pds.beginServe();
+        applyOAuthAgentToRequesterPDS(pds, agent as never, { log });
+        return pds;
+      })();
+      requesters.set(did, entry);
+      entry.catch(() => requesters.delete(did));
+    }
+    return entry;
+  }
 
   /**
    * One agent per account, built once and reused.
@@ -129,21 +216,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
         const vmName = vmNameFromEnv(env);
         log("requester_start", { did: account.did, policy, commandChars: command.length });
 
-        const agent = await agentFor(account.did);
-        // The requester's own DID, so the attestation key is published and its
-        // RFPs verify. Records still go to the user's PDS via the agent below.
-        const pds = await createRequesterPDS({
-          logger,
-          serve: opts.serve,
-          privateKeyHex: await requesterKeyHex(opts.requesterKeyPath),
-          plcDirectoryUrl: plcUrl,
-          ingressProxyHost: opts.ingressProxyHost,
-          label: "socialweb-computer-ssh",
-        });
-        // The requester's own repo has to be reachable: the fulfillment policy
-        // reads records back through its ingress while deciding.
-        await pds.beginServe();
-        applyOAuthAgentToRequesterPDS(pds, agent as never, { log });
+        const pds = await requesterFor(account.did);
 
         eventStreams = createDefaultATProtoEventStreamsClient({
           additionalRelays: opts.relayUrls ?? [],
@@ -165,9 +238,38 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
           logger,
         });
 
-        const code = (result as { sshExitCode?: number }).sshExitCode ?? 0;
-        log("requester_done", { did: account.did, code });
-        io.exit(code);
+        // Exit status is the guest's, and only exists once a guest ran something.
+        // When provisioning stopped short there is no status to forward, and
+        // `?? 0` used to report that as success: a client whose run never started
+        // got exit 0 and one line saying the connection closed. Anything short of
+        // a session is now a failure, with the reason on stderr.
+        const outcome = result as {
+          sshExitCode?: number;
+          event?: string;
+          error?: string;
+          bids?: number;
+          sshReady?: boolean;
+        };
+
+        if (typeof outcome.sshExitCode === "number") {
+          log("requester_done", { did: account.did, code: outcome.sshExitCode });
+          io.exit(outcome.sshExitCode);
+        } else {
+          const explanation = explainNoSession(outcome, {
+            policy,
+            bidWindowSec: policyArgs.bidWindowSec,
+            vmReadyTimeoutSec: opts.vmReadyTimeoutSec,
+          });
+          log("requester_no_session", {
+            did: account.did,
+            event: outcome.event,
+            error: outcome.error,
+            bids: outcome.bids,
+            sshReady: outcome.sshReady,
+          });
+          await io.writeErr(encoder.encode(explanation));
+          io.exit(1);
+        }
       } catch (err) {
         log("requester_failed", { did: account.did, error: String(err) });
         await io.writeErr(encoder.encode(`provisioning failed: ${String(err)}\n`));

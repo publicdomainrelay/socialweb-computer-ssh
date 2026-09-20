@@ -1,7 +1,7 @@
 // @ts-types="npm:@types/ssh2@^1"
 import { Buffer } from "node:buffer";
 import { Server, utils, type Connection, type Session } from "ssh2";
-import type { CommandIo, SshServerHandle, SshServerOptions } from "@publicdomainrelay/socialweb-computer-abc";
+import type { CommandIo, PtySize, SshServerHandle, SshServerOptions } from "@publicdomainrelay/socialweb-computer-abc";
 import type { AuthorizedAccount, PresentedKey } from "@publicdomainrelay/socialweb-computer-common";
 
 interface PublicKeyContext {
@@ -28,11 +28,16 @@ type AcceptFn = (() => unknown) | undefined;
 type RejectFn = (() => void) | undefined;
 
 const DEFAULTS = {
-  maxConnections: 200,
-  maxSessions: 8,
-  sessionsPerAccount: 2,
+  maxConnections: 10_000,
+  maxSessions: 1_000,
+  sessionsPerAccount: 1000,
   maxAuthAttempts: 6,
-  authTimeoutMs: 30_000,
+  // Long enough to read a banner and accept an unknown host key. At 30s a first
+  // connection that paused at the fingerprint prompt was closed underneath the
+  // client, which then reported it as "padding error ... message authentication
+  // code incorrect" -- a protocol-corruption message for what was only a slow
+  // human. The attempt cap, not the clock, is what bounds guessing.
+  authTimeoutMs: 120_000,
 };
 
 // rsa-sha2 is the SHA-2 RSA form; bare ssh-rsa and ssh-dss are SHA-1 and are not
@@ -108,10 +113,76 @@ async function loadOrCreateHostKey(path: string, log: SshServerOptions["log"]): 
   return generated;
 }
 
+const encoder = new TextEncoder();
+
+/**
+ * How long any one step of shutdown may take.
+ *
+ * A restart has to make progress: the listening socket is closed first, so a
+ * shutdown that waits indefinitely leaves the door down rather than merely slow
+ * to come back.
+ */
+const SHUTDOWN_GRACE_MS = 5_000;
+
+/** Resolve after `work`, or after `ms` -- whichever is first. Never rejects. */
+function settleWithin(work: Promise<unknown>, ms: number): Promise<void> {
+  const bounded = Promise.resolve(work).catch(() => {}).then(() => {});
+  const deadline = new Promise<void>((resolve) => setTimeout(resolve, ms));
+  return Promise.race([bounded, deadline]);
+}
+
+/**
+ * Make a message safe to write to a client's terminal.
+ *
+ * A pty puts the client's terminal in raw mode, so nothing downstream turns a
+ * bare newline into CRLF and anything this server writes arrives as a staircase:
+ *
+ *     line one
+ *              line two
+ *
+ * Guest output does not need this -- its own tty already applied ONLCR -- which
+ * is why the pattern is `\r?\n` and not `\n`: a plain substitution would turn
+ * guest CRLF into CRCRLF. Non-pty sessions get the bytes untouched, because
+ * piped stdio wants them verbatim.
+ */
+function forClientTerminal(pty: PtySize | undefined, chunk: Uint8Array): Uint8Array {
+  if (!pty) return chunk;
+  const text = new TextDecoder().decode(chunk);
+  if (!text.includes("\n")) return chunk;
+  return encoder.encode(text.replace(/\r?\n/g, "\r\n"));
+}
+
+/**
+ * What a client is told when no key it holds could authenticate.
+ *
+ * Only when the deployment has not supplied `noKeyCouldMatchMessage`: the server
+ * cannot know the site's name or where keys are registered.
+ */
+function defaultNoKeyMessage(username: string): string {
+  return [
+    "",
+    "socialweb-computer-ssh",
+    "",
+    `  No SSH key registered for "${username}" can sign in here.`,
+    "",
+    "  If that is your handle, register an SSH key against the account first.",
+    "  If it is not, use your handle as the username -- the account, not just the",
+    "  key, is what this door authenticates against.",
+    "",
+  ].join("\n");
+}
+
 export function createSshServer(opts: SshServerOptions): SshServerHandle {
   const { config, authorizer, runner, defaultCommand, log } = opts;
   const limits = { ...DEFAULTS, ...config };
   let server: Server | null = null;
+  /**
+   * Connections still open, so shutdown can end them.
+   *
+   * Tracked because net.Server.close() waits for every connection to end before
+   * it calls back; without this, a single idle session blocks a restart.
+   */
+  const openConnections = new Set<Connection>();
   let running = 0;
   const perAccount = new Map<string, number>();
 
@@ -135,6 +206,17 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
 
   function handleConnection(connection: Connection): void {
     let account: AuthorizedAccount | null = null;
+    /**
+     * The username of a connection accepted only in order to explain.
+     *
+     * Set when the authorizer says the username names no account at all, which is
+     * the one case where accepting is safe. A client offers its keys in order and
+     * stops at the first the server accepts, so accepting an unassociated key
+     * would pre-empt the key that would have worked -- but if the username cannot
+     * name an account, no key would have worked, and refusing only leaves the
+     * caller with "Permission denied (publickey)" and no idea why.
+     */
+    let noKeyCouldMatchUsername: string | null = null;
     let attempts = 0;
 
     // Nothing before authentication should be able to hold a connection open.
@@ -170,6 +252,18 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
       authorizer.authorize(ctx.username, presented)
         .then((resolved) => {
           if (!resolved) {
+            // Rejected, deliberately, and this is the load-bearing part of the
+            // design: a client offers its keys in order and stops at the first
+            // one the server accepts. A typical ~/.ssh holds several, and the
+            // associated one is rarely first -- id_ecdsa often precedes
+            // id_ed25519. Accepting an unassociated key to explain on would end
+            // authentication there, and the key that would have worked is never
+            // tried. Refusing is what lets ssh fall through to it.
+            //
+            // The cost is that this refusal is mute: USERAUTH_FAILURE carries no
+            // text. Explaining an unassociated key needs keyboard-interactive's
+            // INFO_REQUEST, which the client only reaches once publickey is
+            // exhausted.
             log("auth_rejected", { username: ctx.username });
             return ctx.reject(["publickey"]);
           }
@@ -177,7 +271,15 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
           log("auth_accepted", { username: ctx.username, did: resolved.did });
           ctx.accept();
         })
-        .catch((err) => {
+        .catch((err: { kind?: string }) => {
+          if (err?.kind === "no_key_could_match") {
+            noKeyCouldMatchUsername = ctx.username;
+            log("auth_accepted_no_key_could_match", { username: ctx.username });
+            return ctx.accept();
+          }
+          // Everything else stays a rejection. A lookup failure says nothing
+          // about the key, and a key that is simply not in the list must be
+          // refused so the client offers its remaining ones.
           log("auth_error", { username: ctx.username, error: String(err) });
           ctx.reject(["publickey"]);
         });
@@ -190,6 +292,11 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
         const env: Record<string, string> = {};
         let envBytes = 0;
         let channel: ChannelLike | null = null;
+        // A pty the client asked for. Accepted rather than refused: the guest
+        // session allocates its own pty so the command actually gets a terminal,
+        // and refusing only makes OpenSSH print "PTY allocation request failed"
+        // while the run proceeds anyway.
+        let pty: PtySize | undefined;
 
         const ensureChannel = (accept: AcceptFn, reject: RejectFn): ChannelLike | null => {
           if (channel) return channel;
@@ -205,7 +312,11 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
 
         const start = (ch: ChannelLike, command: string): void => {
           if (!account) {
-            ch.stderr.write(new TextEncoder().encode("authentication required\n"));
+            const explanation = noKeyCouldMatchUsername === null
+              ? "authentication required\n"
+              : (config.noKeyCouldMatchMessage ?? defaultNoKeyMessage(noKeyCouldMatchUsername));
+            log("session_refused_no_key_could_match", { username: noKeyCouldMatchUsername });
+            void ch.stderr.write(forClientTerminal(pty, encoder.encode(explanation)));
             ch.exit(1);
             ch.end();
             return;
@@ -213,13 +324,18 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
           const refusal = acquire(account);
           if (refusal) {
             log("session_refused", { did: account.did, reason: refusal });
-            ch.stderr.write(new TextEncoder().encode(`${refusal}\n`));
+            void ch.stderr.write(forClientTerminal(pty, encoder.encode(`${refusal}\n`)));
             ch.exit(1);
             ch.end();
             return;
           }
-          void runOnChannel(ch, account, command, env).finally(() => release(account!));
+          void runOnChannel(ch, account, command, env, pty).finally(() => release(account!));
         };
+
+        session.on("pty", (accept: AcceptFn, _reject: RejectFn, info: { cols?: number; rows?: number }) => {
+          pty = { cols: info.cols ?? 80, rows: info.rows ?? 24 };
+          accept?.();
+        });
 
         session.on("env", (accept: AcceptFn, _reject: RejectFn, info: { key: string; val: string }) => {
           // Bounded so a client cannot grow this session's memory with env
@@ -257,6 +373,7 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
     account: AuthorizedAccount,
     command: string,
     env: Record<string, string>,
+    pty?: PtySize,
   ): Promise<void> {
     let closed = false;
     let exited = false;
@@ -279,9 +396,17 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
       });
     };
 
+    // A pty puts the client's terminal in raw mode, so nothing downstream will
+    // turn a bare newline into CRLF. Guest output does not need this -- its own
+    // tty already applied ONLCR -- but anything this server writes has never
+    // been near a tty, and arrives as a staircase:
+    //     line one
+    //              line two
+    // `\r?\n` rather than `\n` so already-CRLF guest output is left alone.
     const io: CommandIo = {
-      write: (chunk) => writeTo((c) => channel.write(c), chunk),
-      writeErr: (chunk) => writeTo((c) => channel.stderr.write(c), chunk),
+      pty,
+      write: (chunk) => writeTo((c) => channel.write(c), forClientTerminal(pty, chunk)),
+      writeErr: (chunk) => writeTo((c) => channel.stderr.write(c), forClientTerminal(pty, chunk)),
       onData: (handler) => { channel.on("data", handler as (...args: never[]) => void); },
       onClose: (handler) => {
         channel.on("close", (() => { closed = true; handler(); }) as (...args: never[]) => void);
@@ -308,7 +433,7 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
         return;
       }
       log("provisioning_failed", { did: account.did, error: String(err) });
-      await writeTo((c) => channel.stderr.write(c), encoder.encode(`provisioning failed: ${String(err)}\n`));
+      await io.writeErr(encoder.encode(`provisioning failed: ${String(err)}\n`));
       io.exit(1);
     }
   }
@@ -322,6 +447,8 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
           banner: config.banner,
           maxConnections: limits.maxConnections,
         } as never, (connection: Connection) => {
+          openConnections.add(connection);
+          connection.on("close", () => openConnections.delete(connection));
           handleConnection(connection);
         });
         server.on("error", reject);
@@ -334,11 +461,34 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
     },
     async shutdown(): Promise<void> {
       const runnerWithShutdown = runner as unknown as { shutdown?: () => Promise<void> };
-      await runnerWithShutdown.shutdown?.();
-      await new Promise<void>((resolve) => {
+      await settleWithin(Promise.resolve(runnerWithShutdown.shutdown?.()), SHUTDOWN_GRACE_MS);
+
+      const stoppedAccepting = new Promise<void>((resolve) => {
         if (!server) return resolve();
         server.close(() => resolve());
       });
+
+      // net.Server.close() stops accepting new connections but resolves only
+      // once every existing one has ended. A client sitting at a guest prompt
+      // never ends on its own, so the unit would stay in stop-sigterm with the
+      // listening socket already closed: the door is down and cannot be
+      // restarted without killing the process by hand. Ending the sessions is
+      // what makes the close() above able to finish.
+      for (const open of openConnections) {
+        try {
+          open.end();
+        } catch { /* already gone */ }
+      }
+      await settleWithin(stoppedAccepting, SHUTDOWN_GRACE_MS);
+
+      // Last resort for a connection that ignored the polite close. Bounded
+      // shutdown matters more here than a tidy one: a restart that wedges is
+      // worse than a session that gets cut.
+      for (const open of openConnections) {
+        try {
+          (open as unknown as { destroy?: () => void }).destroy?.();
+        } catch { /* already gone */ }
+      }
       server = null;
     },
   };

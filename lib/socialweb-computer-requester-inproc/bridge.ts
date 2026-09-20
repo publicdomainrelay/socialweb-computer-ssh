@@ -90,7 +90,10 @@ export async function runSessionOverTunnel(
   try {
     client = await connect(fqdn, privateKey, 30_000);
     return await new Promise<number>((resolve) => {
-      client!.exec(program, (err, stream) => {
+      // A pty on the guest too, when the client allocated one: without it the
+      // command runs with piped stdio and programs that check isatty behave as
+      // though they were never given a terminal.
+      client!.exec(program, { pty: io.pty ?? false }, (err, stream) => {
         if (err) {
           log("guest_exec_failed", { fqdn, error: err.message });
           resolve(1);

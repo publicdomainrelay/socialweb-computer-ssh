@@ -104,8 +104,12 @@ export class SwcApp extends HTMLElement {
     }
   }
 
-  _renderKeys(session) {
+  async _renderKeys(session) {
     const client = createPdsClient(session);
+    // Which name to ssh to is the server's to say: more than one can reach this
+    // door (an apex domain on the same address, for instance), and the page would
+    // otherwise offer whichever one it happens to be served from.
+    const sshHost = await this._sshHost();
     this.innerHTML = `
       <main class="app-shell">
         <header class="header-row">
@@ -113,15 +117,15 @@ export class SwcApp extends HTMLElement {
           <button class="btn btn-outline btn-sm" id="sign-out">Sign out</button>
         </header>
         <p class="subheader">Signed in as <code>@${this._esc(session.handle || session.userDid)}</code></p>
-        <swc-key-list id="keys"></swc-key-list>
         <div class="card mt-3">
           <h3>Connect</h3>
           <p class="help mt-3">Once a key is registered:</p>
-          <div class="key-code mt-3">ssh ${this._esc(session.handle || session.userDid)}@${this._esc(window.location.hostname)} -p 2222</div>
+          <div class="key-code mt-3">ssh ${this._esc(session.handle || session.userDid)}@${this._esc(sshHost)}</div>
           <p class="help mt-3">Anything you pass as <code>LC_*</code> travels to the VM, and picks the
           fulfillment policy:</p>
-          <div class="key-code mt-3">LC_MY_VAR=hello ssh … "echo $LC_MY_VAR"</div>
+          <div class="key-code mt-3">LC_MY_VAR=hello ssh ${this._esc(session.handle || session.userDid)}@${this._esc(sshHost)} "echo \$LC_MY_VAR"</div>
         </div>
+        <swc-key-list id="keys"></swc-key-list>
         <nav class="text-center mt-3" style="font-size:13px;">
           <a href="https://github.com/publicdomainrelay/socialweb-computer-ssh" target="_blank" rel="noopener" class="text-muted">Source Code</a>
         </nav>
@@ -132,6 +136,17 @@ export class SwcApp extends HTMLElement {
       this._renderLogin();
     });
     this.querySelector('#keys').start(client, session);
+  }
+
+  async _sshHost() {
+    try {
+      const res = await fetch('/connect.json');
+      if (res.ok) {
+        const { sshHost } = await res.json();
+        if (typeof sshHost === 'string' && sshHost) return sshHost;
+      }
+    } catch { /* fall back to where we were served from */ }
+    return window.location.hostname;
   }
 
   _esc(value) {

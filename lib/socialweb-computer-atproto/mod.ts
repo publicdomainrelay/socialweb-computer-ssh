@@ -14,6 +14,12 @@ export interface KeyAuthorizerOptions {
   plcDirectoryUrl?: string;
   cacheTtlMs?: number;
   negativeCacheTtlMs?: number;
+  /**
+   * Floor between re-checks of an account whose cached associations did not
+   * match. Bounds the cost of the miss re-check: unauthenticated attempts must
+   * not each become a fetch against a PDS.
+   */
+  missRecheckMs?: number;
   maxCacheEntries?: number;
   maxResponseBytes?: number;
   log?: (event: string, data?: Record<string, unknown>) => void;
@@ -26,7 +32,21 @@ const DEFAULT_MAX_RESPONSE_BYTES = 1 << 20;
 interface CacheEntry {
   account: AuthorizedAccount | null;
   records: Record<string, unknown>[];
+  /**
+   * The lookup itself failed -- a timeout, a refused fetch, a handle that could
+   * not be resolved. Distinct from "resolved, and this key is not in the list",
+   * because only the latter is a fact about the caller's key.
+   */
+  lookupFailed: boolean;
+  /**
+   * The username cannot name an account at all -- not "this key is not in the
+   * list" and not "the lookup failed". The only case where refusing would
+   * achieve nothing, because no key could have matched.
+   */
+  unknownAccount: boolean;
   expiresAt: number;
+  /** When this entry was last loaded, for the miss re-check floor below. */
+  checkedAt: number;
 }
 
 // Every fetch this door makes is aimed at a host an unauthenticated caller chose
@@ -128,6 +148,7 @@ export function createAtprotoKeyAuthorizer(opts: KeyAuthorizerOptions = {}): Key
   const resolver = new IdResolver({ plcUrl: opts.plcDirectoryUrl ?? "https://plc.directory" });
   const cacheTtlMs = opts.cacheTtlMs ?? 300_000;
   const negativeCacheTtlMs = opts.negativeCacheTtlMs ?? 30_000;
+  const missRecheckMs = opts.missRecheckMs ?? 5_000;
   const maxCacheEntries = opts.maxCacheEntries ?? DEFAULT_MAX_CACHE_ENTRIES;
   const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
   const cache = new Map<string, CacheEntry>();
@@ -142,7 +163,25 @@ export function createAtprotoKeyAuthorizer(opts: KeyAuthorizerOptions = {}): Key
     }
   }
 
-  async function resolveAccount(username: string): Promise<AuthorizedAccount | null> {
+  /**
+   * Resolve the username to an account, or say why it cannot be one.
+   *
+   * `"unknown_account"` is an answer, not a failure: the username cannot name an
+   * account under any key. `null` is a failure to find out.
+   */
+  async function resolveAccount(username: string): Promise<AuthorizedAccount | null | "unknown_account"> {
+    // A handle is a domain name, so it contains a dot. A username with neither a
+    // dot nor a "did:" prefix cannot identify an account whatever key is
+    // offered, which makes it the one case where the door can safely accept a
+    // connection in order to explain: there is no later key that would have
+    // worked, so accepting pre-empts nothing.
+    //
+    // Deliberately not extended to a handle that fails to resolve. A typo and an
+    // unreachable resolver are indistinguishable at this layer, and treating the
+    // second as the first is what told a correctly-registered account its key was
+    // not associated.
+    if (!username.startsWith("did:") && !username.includes(".")) return "unknown_account";
+
     // A did:web username is handed to the identity resolver, which fetches the
     // host named in the DID itself -- and downgrades to plain http for
     // localhost. That host is checked here, because the resolver's own fetch is
@@ -191,41 +230,109 @@ export function createAtprotoKeyAuthorizer(opts: KeyAuthorizerOptions = {}): Key
   }
 
   async function load(username: string): Promise<CacheEntry> {
-    let account: AuthorizedAccount | null = null;
-    let records: Record<string, unknown>[] = [];
-    let transient = false;
+    const empty = (lookupFailed: boolean, unknownAccount = false): CacheEntry => ({
+      account: null,
+      records: [],
+      lookupFailed,
+      unknownAccount,
+      checkedAt: Date.now(),
+      expiresAt: Date.now() + negativeCacheTtlMs,
+    });
+
+    let resolved: AuthorizedAccount | null | "unknown_account" = null;
     try {
-      const resolved = await resolveAccount(username);
-      if (resolved) {
-        records = await listAllRecords(resolved.pds, resolved.did);
-        account = resolved;
-      }
+      resolved = await resolveAccount(username);
     } catch (err) {
-      // A timeout or a refused fetch says nothing about whether this account has
-      // associations, so it must not be remembered as an authoritative "no".
-      transient = true;
       opts.log?.("authorize_error", { username, error: String(err) });
+      return empty(true);
     }
-    return {
-      account,
-      records,
-      expiresAt: Date.now() + (account || transient ? cacheTtlMs : negativeCacheTtlMs),
-    };
+
+    // Not resolved is an unknown, not a "no". The identity resolver reports a
+    // handle it cannot look up the same way as one that does not exist -- it
+    // returns nothing rather than throwing -- so a DNS blip at startup arrives
+    // here indistinguishable from a typo. Treating it as an answer is what told
+    // a correctly-registered account its key was not associated.
+    if (resolved === "unknown_account") return empty(false, true);
+    if (!resolved) return empty(true);
+
+    try {
+      return {
+        account: resolved,
+        records: await listAllRecords(resolved.pds, resolved.did),
+        lookupFailed: false,
+        unknownAccount: false,
+        checkedAt: Date.now(),
+        expiresAt: Date.now() + cacheTtlMs,
+      };
+    } catch (err) {
+      // Same reasoning: a refused fetch or a timeout is not evidence about this
+      // account's associations. Remembered as a failure, on the short window, so
+      // the next attempt retries instead of serving a "no" this never
+      // established.
+      opts.log?.("authorize_error", { username, error: String(err) });
+      return empty(true);
+    }
+  }
+
+  /** Whether this account has any requester association at all, for any key. */
+  function hasAnyAssociation(entry: CacheEntry, account: AuthorizedAccount): boolean {
+    return entry.records.some((rec) => isRequesterAssociation(rec, account.did));
+  }
+
+  function matches(entry: CacheEntry, key: PresentedKey): boolean {
+    const account = entry.account;
+    if (!account) return false;
+    return entry.records.some(
+      (rec) => isRequesterAssociation(rec, account.did) && sshKeyMatches(rec.keyId, key),
+    );
   }
 
   return {
     async authorize(username: string, key: PresentedKey): Promise<AuthorizedAccount | null> {
+      const now = Date.now();
       let entry = cache.get(username);
-      if (!entry || Date.now() >= entry.expiresAt) {
+      if (!entry || now >= entry.expiresAt) {
         entry = await load(username);
         remember(username, entry);
       }
+      // A cached entry that does not match may only mean the account registered
+      // this key since it was loaded -- registering a key and connecting with it
+      // is one motion, so serving the stale answer would look like the door
+      // ignoring a key that is visibly on the PDS. Re-check on a miss, but no
+      // more often than missRecheckMs: every attempt here is unauthenticated, so
+      // an unbounded re-check turns a failed login into a fetch against someone
+      // else's PDS.
+      if (!matches(entry, key) && now - entry.checkedAt >= missRecheckMs) {
+        entry = await load(username);
+        remember(username, entry);
+      }
+      // Throwing, not returning null. The caller decides what to tell a client,
+      // and "your key is not associated with any account" is a claim only a
+      // completed lookup can support -- a failed one must not be dressed up as
+      // it, or a transient DNS blip sends someone off to re-register a key that
+      // was working.
+      if (entry.lookupFailed) {
+        throw new Error(`association lookup failed for ${username}`);
+      }
+      // Distinguishable by kind, so the door can tell a username that names no
+      // account -- where explaining costs nothing -- from a key that simply is
+      // not in the list, where it must keep refusing so the client offers its
+      // remaining keys.
+      // Two situations where no key the client holds could ever have matched:
+      // the username names no account, or the account has no associations at all.
+      // Accepting to explain pre-empts nothing in either, because there is no
+      // later key that would have worked. A third situation is deliberately NOT
+      // here -- an account that does have associations, offered a key that is not
+      // among them -- because one of the client's remaining keys may well be, and
+      // accepting would stop it being tried.
       const account = entry.account;
-      if (!account) return null;
-      const match = entry.records.some(
-        (rec) => isRequesterAssociation(rec, account.did) && sshKeyMatches(rec.keyId, key),
-      );
-      return match ? account : null;
+      if (entry.unknownAccount || (account && !hasAnyAssociation(entry, account))) {
+        throw Object.assign(
+          new Error(`${username} has no key that could be associated with it`),
+          { kind: "no_key_could_match", reason: entry.unknownAccount ? "no_account" : "no_associations" },
+        );
+      }
+      return matches(entry, key) ? account : null;
     },
   };
 }

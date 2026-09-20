@@ -7,6 +7,25 @@ export interface WebFactoryOptions {
   sessionStore: SessionStore;
   verifier: SessionVerifier;
   scope: string;
+  /**
+   * Public origin this deployment is reached at, e.g. https://ssh.example.com.
+   *
+   * Required whenever the app sits behind a TLS terminator: the client_id must
+   * be an https URL with no port, and a proxied request arrives as plain http,
+   * so the request origin would publish an http:// client_id that authorization
+   * servers refuse. Set explicitly rather than read from X-Forwarded-* -- the
+   * header is only trustworthy when the listener is unreachable except through
+   * the proxy, which is a property of the deployment, not of this code.
+   */
+  publicOrigin?: string;
+  /**
+   * Hostname the page should tell people to ssh to.
+   *
+   * More than one name can reach this door -- an apex domain resolving to the
+   * same address, for instance -- and the page would otherwise offer whichever
+   * one it happens to be served from. Defaults to the public origin's hostname.
+   */
+  sshPublicHost?: string;
   clientName?: string;
   clientMetadataPath?: string;
   maxBodyBytes?: number;
@@ -19,22 +38,38 @@ export function createWebFactory(opts: WebFactoryOptions) {
   const clientMetadataPath = opts.clientMetadataPath ?? "/oauth-client-metadata.json";
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY;
   const log = opts.log ?? (() => {});
+  const publicOrigin = opts.publicOrigin?.replace(/\/+$/, "");
 
   return createFactory({
     initApp: (app) => {
+      // What the page should put in its connect example. Served rather than
+      // derived client-side because only the server knows which names reach it.
+      app.get("/connect.json", (c) => {
+        const origin = publicOrigin ?? new URL(c.req.url).origin;
+        return c.json({
+          sshHost: opts.sshPublicHost ?? new URL(origin).hostname,
+        });
+      });
+
       // The browser runs the whole OAuth flow itself, client-side; this document
       // is what its client_id points at when the app is not on loopback.
-      app.get(clientMetadataPath, (c) => c.json({
-        client_id: `${new URL(c.req.url).origin}${clientMetadataPath}`,
-        application_type: "web",
-        dpop_bound_access_tokens: true,
-        grant_types: ["authorization_code", "refresh_token"],
-        response_types: ["code"],
-        redirect_uris: [new URL(c.req.url).origin + "/"],
-        scope: opts.scope,
-        token_endpoint_auth_method: "none",
-        client_name: opts.clientName ?? "socialweb-computer-ssh",
-      }));
+      app.get(clientMetadataPath, (c) => {
+        const origin = publicOrigin ?? new URL(c.req.url).origin;
+        return c.json({
+          client_id: `${origin}${clientMetadataPath}`,
+          application_type: "web",
+          dpop_bound_access_tokens: true,
+          grant_types: ["authorization_code", "refresh_token"],
+          response_types: ["code"],
+          // Both spellings, because the page strips trailing slashes from its
+          // redirect_uri and the authorization server requires an exact match
+          // against a declared URI.
+          redirect_uris: [`${origin}/`, origin],
+          scope: opts.scope,
+          token_endpoint_auth_method: "none",
+          client_name: opts.clientName ?? "socialweb-computer-ssh",
+        });
+      });
 
       // The browser deposits the session it obtained so the SSH half can use it
       // to act as the signed-in account. It is unauthenticated by nature --

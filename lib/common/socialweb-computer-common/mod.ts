@@ -99,10 +99,35 @@ export function parseBoolean(value: string | undefined, fallback: boolean): bool
   return fallback;
 }
 
+/**
+ * Locale variables that share the `LC_` prefix but describe the *client's*
+ * locale, not this door's configuration. Forwarding them exports a locale the
+ * guest need not have, and bash answers with
+ * "setlocale: LC_ALL: cannot change locale (en_US.UTF-8)". They are not policy
+ * inputs, so they are dropped rather than translated.
+ */
+const LOCALE_VARS = new Set([
+  "LC_ALL",
+  "LC_CTYPE",
+  "LC_NUMERIC",
+  "LC_TIME",
+  "LC_COLLATE",
+  "LC_MONETARY",
+  "LC_MESSAGES",
+  "LC_PAPER",
+  "LC_NAME",
+  "LC_ADDRESS",
+  "LC_TELEPHONE",
+  "LC_MEASUREMENT",
+  "LC_IDENTIFICATION",
+]);
+
 export function lcEnv(env: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(env)) {
-    if (name.startsWith(LC_ENV_PREFIX) && ENV_NAME.test(name)) out[name] = value;
+    if (!name.startsWith(LC_ENV_PREFIX) || !ENV_NAME.test(name)) continue;
+    if (LOCALE_VARS.has(name)) continue;
+    out[name] = value;
   }
   return out;
 }
