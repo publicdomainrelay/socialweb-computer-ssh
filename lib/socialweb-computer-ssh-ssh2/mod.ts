@@ -1,7 +1,7 @@
 // @ts-types="npm:@types/ssh2@^1"
 import { Buffer } from "node:buffer";
 import { Server, utils, type Connection, type Session } from "ssh2";
-import type { CommandIo, PtySize, SshServerHandle, SshServerOptions } from "@publicdomainrelay/socialweb-computer-abc";
+import type { CommandIo, PtySize, SessionReport, SshServerHandle, SshServerOptions } from "@publicdomainrelay/socialweb-computer-abc";
 import type { AuthorizedAccount, PresentedKey } from "@publicdomainrelay/socialweb-computer-common";
 
 interface PublicKeyContext {
@@ -114,6 +114,12 @@ async function loadOrCreateHostKey(path: string, log: SshServerOptions["log"]): 
 }
 
 const encoder = new TextEncoder();
+
+const SESSION_REPORT_PREFIX = "socialweb-computer-session-report ";
+
+function sessionReportLine(report: SessionReport): Uint8Array {
+  return encoder.encode(SESSION_REPORT_PREFIX + JSON.stringify(report) + "\n");
+}
 
 /**
  * How long any one step of shutdown may take.
@@ -329,7 +335,23 @@ export function createSshServer(opts: SshServerOptions): SshServerHandle {
             ch.end();
             return;
           }
-          void runOnChannel(ch, account, command, env, pty).finally(() => release(account!));
+          const sessionId = crypto.randomUUID();
+          const startTimeMs = Date.now();
+          const remainingSec = limits.sessionMaxSec ?? 0;
+          const report: SessionReport = { sessionId, accountDid: account.did, startTimeMs, remainingSec };
+          log("session_started", { sessionId, did: account.did, remainingSec, commandChars: command.length });
+          void ch.stderr.write(sessionReportLine(report));
+          const capTimer = remainingSec > 0
+            ? setTimeout(() => {
+              log("session_capped", { sessionId, did: account!.did, remainingSec });
+              ch.exit(1);
+              ch.end();
+            }, remainingSec * 1000)
+            : null;
+          void runOnChannel(ch, account, command, env, pty).finally(() => {
+            if (capTimer !== null) clearTimeout(capTimer);
+            release(account!);
+          });
         };
 
         session.on("pty", (accept: AcceptFn, _reject: RejectFn, info: { cols?: number; rows?: number }) => {

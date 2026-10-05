@@ -61,6 +61,14 @@ export interface SshServerConfig {
   sessionsPerAccount?: number;
   maxAuthAttempts?: number;
   authTimeoutMs?: number;
+  sessionMaxSec?: number;
+}
+
+export interface SessionReport {
+  sessionId: string;
+  accountDid: string;
+  startTimeMs: number;
+  remainingSec: number;
 }
 
 export interface SshServerOptions {

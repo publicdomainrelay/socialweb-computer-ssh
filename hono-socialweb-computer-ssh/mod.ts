@@ -185,6 +185,7 @@ const ssh = createSshServer({
     maxConnections: options.maxConnections as number,
     maxSessions: options.maxSessions as number,
     sessionsPerAccount: options.sessionsPerAccount as number,
+    sessionMaxSec: options.sessionMaxSec as number,
     authTimeoutMs: (options.authTimeoutSec as number) * 1000,
   },
   authorizer,

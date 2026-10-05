@@ -33,6 +33,7 @@ function fakeRequester(): ComputeCommandRunner {
 interface Harness {
   sshPort: number;
   records: Array<Record<string, unknown>>;
+  logs: Array<{ event: string; data?: Record<string, unknown> }>;
   stateDir: string;
   setRecords(records: Array<Record<string, unknown>>): void;
   failLookups(): void;
@@ -55,8 +56,10 @@ async function serveApp(app: Hono): Promise<{ port: number; close(): Promise<voi
 async function startHarness(
   records: Array<Record<string, unknown>>,
   configOverride: Record<string, unknown> = {},
+  runner: ComputeCommandRunner = fakeRequester(),
 ): Promise<Harness> {
   const stateDir = await Deno.makeTempDir({ prefix: "socialweb-computer-ssh-test-" });
+  const logs: Array<{ event: string; data?: Record<string, unknown> }> = [];
   let current = records;
   let pdsFailing = false;
 
@@ -102,15 +105,16 @@ async function startHarness(
   const ssh = createSshServer({
     config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key`, ...configOverride },
     authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl: `http://127.0.0.1:${plc.port}`, cacheTtlMs: 0, negativeCacheTtlMs: 0 }),
-    runner: fakeRequester(),
+    runner,
     defaultCommand: "bash",
-    log: () => {},
+    log: (event, data) => { logs.push({ event, data }); },
   });
   const sshPort = await ssh.listen();
 
   return {
     sshPort,
     stateDir,
+    logs,
     get records() {
       return current;
     },
@@ -461,5 +465,108 @@ Deno.test("a username that is not a handle is told so without a lookup", async (
     assert(result.stderr.includes("can sign in here"));
   } finally {
     await harness.close();
+  }
+});
+
+const SESSION_REPORT_FIELDS = ["accountDid", "remainingSec", "sessionId", "startTimeMs"];
+
+function hangingRunner(): ComputeCommandRunner {
+  return { run: () => new Promise<void>(() => {}) };
+}
+
+Deno.test("the door reports the session deadline in band, and never the command", async () => {
+  const key = keypair();
+  const harness = await startHarness([associationRecord(key.publicKey)], { sessionMaxSec: 30 });
+  try {
+    const token = "sk-supersecrettokenvalue";
+    const result = await runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, `--token ${token}`);
+    const [line, ...guestErr] = result.stderr.split("\n");
+    assert(
+      line.startsWith("socialweb-computer-session-report "),
+      `stderr did not open with the report, so a reader would refuse: ${JSON.stringify(result.stderr)}`,
+    );
+    const report = JSON.parse(line.slice("socialweb-computer-session-report ".length));
+    // The tuple, exactly: a field added here is a field the reader must be taught,
+    // and `command` is absent by construction -- the builder never sees it.
+    assertEquals(Object.keys(report).sort(), SESSION_REPORT_FIELDS);
+    assertEquals(report.accountDid, ACCOUNT_DID);
+    assertEquals(report.remainingSec, 30);
+    assert(Number.isFinite(report.startTimeMs) && report.startTimeMs > 0, "startTimeMs is not a clock reading");
+    assert(report.sessionId.length > 0, "sessionId is empty");
+    // A duration, not an absolute: the reader stamps now + remainingSec with the
+    // clock that later does the comparison.
+    assert(report.remainingSec < 1_000_000, "remainingSec looks like an absolute deadline");
+    assert(!line.includes("command"), `the report names the command: ${line}`);
+    assert(!line.includes("env"), `the report carries the session env: ${line}`);
+    for (const written of [line, ...guestErr]) {
+      assert(!written.includes(token), `the token reached the session channel: ${written}`);
+    }
+    for (const { event, data } of harness.logs) {
+      const text = `${event} ${JSON.stringify(data ?? {})}`;
+      assert(!text.includes(token), `the token reached a log line: ${text}`);
+      assert(!/\benv\b/.test(text), `a log line carries the session env: ${text}`);
+      assert(!/\bcommand\b/.test(text), `a log line carries the command: ${text}`);
+    }
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("the session cap ends a session that outlives it", async () => {
+  const key = keypair();
+  const harness = await startHarness([associationRecord(key.publicKey)], { sessionMaxSec: 1 }, hangingRunner());
+  try {
+    const started = Date.now();
+    const result = await runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, "true");
+    const elapsed = Date.now() - started;
+    assertEquals(result.code, 1);
+    assert(elapsed >= 900, `session ended after ${elapsed}ms, before its own 1s cap`);
+    assert(elapsed < 10_000, `session outlived its 1s cap by ${elapsed}ms`);
+    assertEquals(harness.logs.filter((l) => l.event === "session_capped").length, 1);
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("a zero cap means the door never ends the session", async () => {
+  const key = keypair();
+  const harness = await startHarness([associationRecord(key.publicKey)], { sessionMaxSec: 0 }, hangingRunner());
+  try {
+    // "Unlimited" is only honest while nothing kills the session: a timer armed
+    // for a reported 0 would make the report a guess.
+    const outcome = await Promise.race([
+      runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, "true").then(() => "ended"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("still open"), 2_500)),
+    ]);
+    assertEquals(outcome, "still open");
+    assertEquals(harness.logs.some((l) => l.event === "session_capped"), false);
+  } finally {
+    await harness.close();
+  }
+});
+
+Deno.test("no log call in the door can carry the command or the session env", async () => {
+  const source = await Deno.readTextFile(
+    new URL("../lib/socialweb-computer-ssh-ssh2/mod.ts", import.meta.url),
+  );
+  const calls = [...source.matchAll(/\blog\(\s*"([a-z_]+)"\s*,\s*\{([^}]*)\}/g)];
+  // A call the pattern cannot read is a call this test cannot see, so a shape it
+  // does not recognise fails here rather than passing unexamined.
+  assertEquals(
+    calls.length,
+    [...source.matchAll(/\blog\(/g)].length,
+    "a log call is shaped so that this guard cannot read it",
+  );
+  assert(calls.length > 0, "expected the door to log something");
+  for (const [, event, fields] of calls) {
+    for (const field of fields.split(",")) {
+      const [name, ...value] = field.split(":");
+      const expression = value.join(":").trim();
+      assert(!/\benv\b/.test(expression), `${event} logs the session env as ${name}`);
+      assert(
+        !/\bcommand\b/.test(expression) || expression === "command.length",
+        `${event} logs the command as ${name}`,
+      );
+    }
   }
 });
