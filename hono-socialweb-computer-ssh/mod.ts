@@ -98,7 +98,13 @@ const pdsLogger = {
 
 const serve = createServe({
   logger,
-  tcp: { addr: options.serveAddr as string, port: options.httpPort as number },
+  tcp: {
+    addr: options.serveAddr as string,
+    port: options.httpPort as number,
+    certFile: options.tlsCertFile as string | undefined,
+    keyFile: options.tlsKeyFile as string | undefined,
+  },
+  portFile: options.portFile as string | undefined,
 });
 // The API is registered first so /session and the metadata document never reach
 // the static handler; everything else falls through to the SPA.

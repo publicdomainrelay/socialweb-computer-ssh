@@ -1668,7 +1668,8 @@
         "dependencies": [
           "jsr:@publicdomainrelay/did-key-ingress-proxy-abc@0",
           "jsr:@publicdomainrelay/did-key-ingress-proxy-common@0",
-          "npm:@atproto/crypto@0.5"
+          "npm:@atproto/crypto@0.5",
+          "npm:@atproto/identity@0.5"
         ]
       },
       "jsr:@publicdomainrelay/did-key-ingress-proxy@0.0.0": {

@@ -170,6 +170,22 @@
       "type": "string",
       "description": "Where co/core sends the browser back after approval. Its host must serve /.well-known/cocore-app.json naming this app's DID. Defaults to the public origin.",
       "env": "COCORE_RETURN_URL"
+    },
+    "tls-cert-file": {
+      "type": "string",
+      "description": "PEM certificate to serve TLS with; requires tls-key-file",
+      "env": "TLS_CERT_FILE"
+    },
+    "tls-key-file": {
+      "type": "string",
+      "description": "PEM private key to serve TLS with; requires tls-cert-file",
+      "env": "TLS_KEY_FILE"
+    },
+    "port-file": {
+      "type": "string",
+      "description": "File the bound TCP port is written to once listening (used with port 0)",
+      "env": "PORT_FILE",
+      "default": "./port-bound-to"
     }
   }
 }
