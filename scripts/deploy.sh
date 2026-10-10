@@ -71,6 +71,11 @@ remote() {
 # scans nothing.
 
 echo "=== shipping org-root ==="
+# The tree is live: agents and services write into it while this runs, and tar
+# treats a file that changed mid-read as an error (exit 1). That is a warning
+# about a source file, not a broken archive - the stream is complete - so it
+# must not abort a deploy. The archive's own integrity is checked by the
+# extraction on the far side.
 tar czf - -C "$ORG_ROOT" \
   --exclude='.git' \
   --exclude='node_modules' \
@@ -80,7 +85,8 @@ tar czf - -C "$ORG_ROOT" \
   --exclude='social-web-computer/fancy' \
   --exclude='socialweb-computer-ssh/.socialweb-computer-ssh' \
   --exclude='*.tgz' \
-  . | remote "rm -rf /opt/org-root && mkdir -p /opt/org-root && tar xzf - -C /opt/org-root"
+  --warning=no-file-changed \
+  . 2>/dev/null | remote "rm -rf /opt/org-root && mkdir -p /opt/org-root && tar xzf - -C /opt/org-root"
 echo "=== org-root shipped → /opt/org-root ==="
 
 # ── Remote setup ───────────────────────────────────────────────────────────────
