@@ -1606,6 +1606,23 @@
           "npm:yaml@^2.7.0"
         ]
       },
+      "jsr:@publicdomainrelay/compute-provider-firecracker@0.0.0": {
+        "dependencies": [
+          "jsr:@hono/hono@4",
+          "jsr:@publicdomainrelay/atproto-helpers@0",
+          "jsr:@publicdomainrelay/cloud-init-common@0",
+          "jsr:@publicdomainrelay/compute-provider-abc@0",
+          "jsr:@publicdomainrelay/hono-factory-package-registry@0",
+          "jsr:@publicdomainrelay/microvm-firecracker@0",
+          "jsr:@publicdomainrelay/node-image-abc@0",
+          "jsr:@publicdomainrelay/oidc-issuer-abc@0",
+          "jsr:@publicdomainrelay/oidc-issuer-hono@0",
+          "jsr:@publicdomainrelay/package-store-local-fs@0",
+          "jsr:@publicdomainrelay/secrets-common@0",
+          "jsr:@publicdomainrelay/serve@0",
+          "npm:yaml@^2.7.0"
+        ]
+      },
       "jsr:@publicdomainrelay/compute-provider-local@0.0.0": {
         "dependencies": [
           "jsr:@publicdomainrelay/atproto-helpers@0",
@@ -1613,6 +1630,7 @@
           "jsr:@publicdomainrelay/hono-factory-package-registry@0",
           "jsr:@publicdomainrelay/oidc-issuer-hono@0",
           "jsr:@publicdomainrelay/package-store-local-fs@0",
+          "jsr:@publicdomainrelay/qemu-standalone@0",
           "jsr:@publicdomainrelay/serve@0",
           "npm:yaml@^2.7.0"
         ]
@@ -1913,6 +1931,17 @@
       },
       "jsr:@publicdomainrelay/market-settlement-free@0.0.0": {},
       "jsr:@publicdomainrelay/market-settlement-x402@0.0.0": {},
+      "jsr:@publicdomainrelay/microvm-firecracker@0.0.0": {
+        "dependencies": [
+          "jsr:@publicdomainrelay/container-backend-abc@0"
+        ]
+      },
+      "jsr:@publicdomainrelay/node-image-abc@0.0.0": {},
+      "jsr:@publicdomainrelay/node-image-firecracker@0.0.0": {
+        "dependencies": [
+          "jsr:@publicdomainrelay/node-image-abc@0"
+        ]
+      },
       "jsr:@publicdomainrelay/oauth-scope@0.0.0": {},
       "jsr:@publicdomainrelay/oauth-server-common@0.0.0": {},
       "jsr:@publicdomainrelay/oidc-issuer-abc@0.0.0": {

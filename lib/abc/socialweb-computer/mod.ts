@@ -64,13 +64,6 @@ export interface SshServerConfig {
   sessionMaxSec?: number;
 }
 
-export interface SessionReport {
-  sessionId: string;
-  accountDid: string;
-  startTimeMs: number;
-  remainingSec: number;
-}
-
 export interface SshServerOptions {
   config: SshServerConfig;
   authorizer: KeyAuthorizer;

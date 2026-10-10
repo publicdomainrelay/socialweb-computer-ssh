@@ -468,39 +468,37 @@ Deno.test("a username that is not a handle is told so without a lookup", async (
   }
 });
 
-const SESSION_REPORT_FIELDS = ["accountDid", "remainingSec", "sessionId", "startTimeMs"];
-
 function hangingRunner(): ComputeCommandRunner {
   return { run: () => new Promise<void>(() => {}) };
 }
 
-Deno.test("the door reports the session deadline in band, and never the command", async () => {
+Deno.test("the door writes nothing of its own to the session channel", async () => {
+  // A session channel carries the guest's command and nothing else. The door used
+  // to open stderr with a machine-readable deadline line, for a reader in another
+  // repo that no longer exists; every consumer of it is gone, so the line was a
+  // log line in a place logs do not belong - a human's terminal - on every
+  // connection. The deadline is the door's own business and lives in its log.
   const key = keypair();
   const harness = await startHarness([associationRecord(key.publicKey)], { sessionMaxSec: 30 });
   try {
     const token = "sk-supersecrettokenvalue";
     const result = await runOverSsh(harness.sshPort, key.privateKey, ACCOUNT_DID, `--token ${token}`);
-    const [line, ...guestErr] = result.stderr.split("\n");
     assert(
-      line.startsWith("socialweb-computer-session-report "),
-      `stderr did not open with the report, so a reader would refuse: ${JSON.stringify(result.stderr)}`,
+      !result.stderr.includes("session-report"),
+      `the door wrote its own line to the session: ${JSON.stringify(result.stderr)}`,
     );
-    const report = JSON.parse(line.slice("socialweb-computer-session-report ".length));
-    // The tuple, exactly: a field added here is a field the reader must be taught,
-    // and `command` is absent by construction -- the builder never sees it.
-    assertEquals(Object.keys(report).sort(), SESSION_REPORT_FIELDS);
-    assertEquals(report.accountDid, ACCOUNT_DID);
-    assertEquals(report.remainingSec, 30);
-    assert(Number.isFinite(report.startTimeMs) && report.startTimeMs > 0, "startTimeMs is not a clock reading");
-    assert(report.sessionId.length > 0, "sessionId is empty");
-    // A duration, not an absolute: the reader stamps now + remainingSec with the
-    // clock that later does the comparison.
-    assert(report.remainingSec < 1_000_000, "remainingSec looks like an absolute deadline");
-    assert(!line.includes("command"), `the report names the command: ${line}`);
-    assert(!line.includes("env"), `the report carries the session env: ${line}`);
-    for (const written of [line, ...guestErr]) {
-      assert(!written.includes(token), `the token reached the session channel: ${written}`);
-    }
+    assert(
+      !result.stdout.includes("session-report"),
+      `the door wrote its own line to the session: ${JSON.stringify(result.stdout)}`,
+    );
+    // stdout is the harness's own echo of the run request, which necessarily
+    // names the command; stderr is where only the guest and the door write.
+    assert(!result.stderr.includes(token), `the token reached the session's stderr: ${result.stderr}`);
+    const started = harness.logs.find((l) => l.event === "session_started");
+    assert(started !== undefined, "the door did not log the session's start");
+    const logged = JSON.stringify(started.data ?? {});
+    // The deadline is still recorded where a machine reads it: the door's log.
+    assert(logged.includes("remainingSec"), `the log line carries no deadline: ${logged}`);
     for (const { event, data } of harness.logs) {
       const text = `${event} ${JSON.stringify(data ?? {})}`;
       assert(!text.includes(token), `the token reached a log line: ${text}`);
