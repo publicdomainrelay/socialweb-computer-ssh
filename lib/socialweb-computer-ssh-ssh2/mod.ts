@@ -59,6 +59,14 @@ function parseableHostKey(pem: string): boolean {
   return !(parsed instanceof Error);
 }
 
+function generateParseableHostKey(): string {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const generated = utils.generateKeyPairSync("ed25519").private;
+    if (parseableHostKey(generated)) return generated;
+  }
+  throw new Error("ssh2 could not produce a parseable ed25519 host key");
+}
+
 /**
  * ssh2 hands the presented signature to the application and never verifies it
  * itself, so a client that knows a registered public key could authenticate
@@ -100,7 +108,7 @@ async function loadOrCreateHostKey(path: string, log: SshServerOptions["log"]): 
     }
     return existing;
   }
-  const generated = utils.generateKeyPairSync("ed25519").private;
+  const generated = generateParseableHostKey();
   const dir = path.split("/").slice(0, -1).join("/");
   if (dir) await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
   const file = await Deno.open(path, { createNew: true, write: true, mode: 0o600 });
