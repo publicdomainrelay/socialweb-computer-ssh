@@ -113,11 +113,18 @@ PDS and the bids arrive over the firehose.
 
 ### The guest session
 
-The SSH session to the guest does not shell out to `ssh`. The guest's tunnel is a
-WebSocket; the server opens it directly, wraps it as a duplex stream, and drives
-it with `ssh2`'s client. That drops the `ssh` binary, `websocat`, the
-ProxyCommand string, and `ensureWebsocat` — which prepends to the process `PATH`,
-a bug in a server doing concurrent work.
+The SSH session to the guest does not shell out to `ssh`. The requester asks for
+the default iroh transport, so the guest reports its own iroh ticket
+(`iroh://...`) on its on-network event. The server spawns `dumbpipe connect
+<ticket>` (the argv atproto-market's `dumbpipeConnectArgv` gives the iroh
+ProxyCommand; the binary comes from `ensureDumbpipe`, the same pinned release
+request-vm-ssh fetches), wraps its stdio as a duplex stream, and drives it with
+`ssh2`'s client. A guest address that is not an iroh ticket is refused; the
+gateway never dials the relay websocket tunnel.
+
+A signed `vm.terminated` from the bidder ends the readiness poll and any running
+session at once; the client gets the bidder's reason on stderr and a non-zero
+exit status.
 
 The policy sandbox runs in a Worker **in this process**, so the server needs
 `--unstable-worker-options` (and `--unstable-kv`); see the `start` task.
@@ -448,7 +455,7 @@ lib/abc/socialweb-computer                KeyAuthorizer / ComputeCommandRunner /
 lib/socialweb-computer-atproto            badgeBlueKeys lookup over a PDS
 lib/socialweb-computer-oauth-atproto      verifies a deposited session against its PDS
 lib/socialweb-computer-cocore-http        co/core device pairing, token store, guest secret entry
-lib/socialweb-computer-requester-inproc   runComputeContract in-process + tunnel bridge
+lib/socialweb-computer-requester-inproc   runComputeContract in-process + iroh session bridge
 lib/socialweb-computer-oauth-session-fs   durable session store
 lib/hono-factory-socialweb-computer-oauth Hono app: metadata document, session deposit, app DID
 lib/hono-factory-socialweb-computer-cocore Hono app: /cocore pairing endpoints

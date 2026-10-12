@@ -2,163 +2,282 @@
 import { Buffer } from "node:buffer";
 import { Duplex } from "node:stream";
 import { Client } from "ssh2";
-import { tunnelWsUrl } from "@publicdomainrelay/requester-xrpc";
+import { dumbpipeConnectArgv } from "@publicdomainrelay/requester-xrpc";
+import type { SshSessionProvider } from "@publicdomainrelay/requester-abc";
 import type { CommandIo } from "@publicdomainrelay/socialweb-computer-abc";
 
-/**
- * The guest's tunnel as a duplex stream.
- *
- * The tunnel is a WebSocket that carries raw bytes to the guest's sshd; that is
- * all `websocat --binary` did. Doing it here removes the ssh binary, websocat,
- * the ProxyCommand string, and ensureWebsocat -- which mutates the process PATH,
- * a bug in a server running concurrent work.
- */
-async function tunnelStream(url: string): Promise<Duplex> {
-  const ws = new WebSocket(url);
-  ws.binaryType = "arraybuffer";
-  // ssh2 writes the client banner immediately on connect, so the socket has to
-  // be OPEN before it is handed over -- otherwise the first writes throw
-  // InvalidStateError and the handshake never starts.
-  await new Promise<void>((resolve, reject) => {
-    ws.addEventListener("open", () => resolve(), { once: true });
-    ws.addEventListener("error", () => reject(new Error(`tunnel websocket to ${url} failed`)), { once: true });
-  });
-  const stream = new Duplex({
-    read() { /* push happens from the socket */ },
+export type GatewayLog = (event: string, data?: Record<string, unknown>) => void;
+
+export const TERMINATED_SESSION_EXIT_CODE = 255;
+
+const POLL_INTERVAL_MS = 5_000;
+
+export class NonIrohGuestAddressError extends Error {
+  constructor(readonly target: string) {
+    super(`guest address is not an iroh ticket (iroh://...): ${target}`);
+  }
+}
+
+interface IrohDial {
+  sock: Duplex;
+  close(): void;
+}
+
+function dialIroh(target: string, dumbpipePath: string, log: GatewayLog): IrohDial {
+  const argv = dumbpipeConnectArgv(target, dumbpipePath);
+  if (!argv) throw new NonIrohGuestAddressError(target);
+  const child = new Deno.Command(argv[0], {
+    args: argv.slice(1),
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+  }).spawn();
+  let killed = false;
+  const kill = () => {
+    if (killed) return;
+    killed = true;
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      return;
+    }
+  };
+  const writer = child.stdin.getWriter();
+  const sock = new Duplex({
+    read() {},
     write(chunk: Uint8Array, _encoding, cb) {
-      try {
-        ws.send(chunk);
-        cb();
-      } catch (err) {
-        cb(err as Error);
-      }
+      writer.write(new Uint8Array(chunk)).then(() => cb(), (err) => cb(err as Error));
     },
     final(cb) {
-      try {
-        ws.close();
-      } catch { /* already closed */ }
-      cb();
+      writer.close().then(() => cb(), () => cb());
+    },
+    destroy(err, cb) {
+      kill();
+      cb(err);
     },
   });
-  ws.addEventListener("message", (event) => stream.push(new Uint8Array(event.data as ArrayBuffer)));
-  ws.addEventListener("close", () => stream.push(null));
-  ws.addEventListener("error", () => stream.destroy(new Error("tunnel websocket failed")));
-  return stream;
+  void (async () => {
+    for await (const chunk of child.stdout) sock.push(chunk);
+    sock.push(null);
+  })().catch((err) => sock.destroy(err as Error));
+  void (async () => {
+    const decoder = new TextDecoder();
+    let tail = "";
+    for await (const chunk of child.stderr) tail = (tail + decoder.decode(chunk)).slice(-2000);
+    const status = await child.status;
+    if (!killed && !status.success) log("guest_iroh_dial_exit", { code: status.code, stderr: tail.trim() });
+  })().catch(() => {});
+  return { sock, close: kill };
 }
 
-async function connect(fqdn: string, privateKey: string, timeoutMs: number): Promise<Client> {
-  const sock = await tunnelStream(tunnelWsUrl(fqdn));
+async function connect(
+  target: string,
+  dumbpipePath: string,
+  privateKey: string,
+  timeoutMs: number,
+  log: GatewayLog,
+  signal?: AbortSignal,
+): Promise<{ client: Client; dial: IrohDial }> {
+  const dial = dialIroh(target, dumbpipePath, log);
   const client = new Client();
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("tunnel connect timed out")), timeoutMs);
-    client
-      .on("ready", () => {
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => reject(new Error("guest terminated while connecting"));
+      if (signal?.aborted) return onAbort();
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const timer = setTimeout(() => reject(new Error("iroh connect timed out")), timeoutMs);
+      const settle = () => {
         clearTimeout(timer);
-        resolve();
-      })
-      .on("error", (err: Error) => {
-        clearTimeout(timer);
-        reject(err);
-      })
-      .connect({
-        sock,
-        username: "root",
-        privateKey,
-        // The trust anchor is the tunnel registration, not the guest's host key.
-        hostVerifier: () => true,
-      });
-  });
-  return client;
+        signal?.removeEventListener("abort", onAbort);
+      };
+      client
+        .on("ready", () => {
+          settle();
+          resolve();
+        })
+        .on("error", (err: Error) => {
+          settle();
+          reject(err);
+        })
+        .connect({
+          sock: dial.sock,
+          username: "root",
+          privateKey,
+          hostVerifier: () => true,
+        });
+    });
+  } catch (err) {
+    try {
+      client.end();
+    } catch {
+      dial.close();
+    }
+    dial.close();
+    throw err;
+  }
+  return { client, dial };
 }
 
-/**
- * Run one command on the guest, with the SSH channel as its terminal.
- *
- * Never rejects. runComputeContract has no try/catch around the SSH step, so a
- * rejection would skip the rest of the flow -- including vm.delete, which would
- * leak the VM.
- */
-export async function runSessionOverTunnel(
+function endConnection(conn: { client: Client; dial: IrohDial } | null): void {
+  if (!conn) return;
+  try {
+    conn.client.end();
+  } catch {
+    conn.dial.close();
+  }
+  conn.dial.close();
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", done);
+      resolve();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+}
+
+export async function runGuestSession(
   privateKeyPath: string,
-  fqdn: string,
+  target: string,
   program: string,
   io: CommandIo,
-  log: (event: string, data?: Record<string, unknown>) => void,
+  dumbpipePath: string,
+  log: GatewayLog,
+  signal?: AbortSignal,
 ): Promise<number> {
+  if (!dumbpipeConnectArgv(target)) {
+    const err = new NonIrohGuestAddressError(target);
+    log("guest_session_refused", { target, error: err.message });
+    await io.writeErr(new TextEncoder().encode(`guest session failed: ${err.message}\n`));
+    return 1;
+  }
+  if (signal?.aborted) {
+    log("guest_session_terminated", { target, phase: "before_connect" });
+    return TERMINATED_SESSION_EXIT_CODE;
+  }
   const privateKey = await Deno.readTextFile(privateKeyPath);
-  let client: Client | null = null;
+  let conn: { client: Client; dial: IrohDial } | null = null;
   try {
-    client = await connect(fqdn, privateKey, 30_000);
+    conn = await connect(target, dumbpipePath, privateKey, 30_000, log, signal);
+    const client = conn.client;
     return await new Promise<number>((resolve) => {
-      // A pty on the guest too, when the client allocated one: without it the
-      // command runs with piped stdio and programs that check isatty behave as
-      // though they were never given a terminal.
-      client!.exec(program, { pty: io.pty ?? false }, (err, stream) => {
+      let settled = false;
+      const finish = (code: number) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        resolve(code);
+      };
+      function onAbort() {
+        log("guest_session_terminated", { target, phase: "session" });
+        finish(TERMINATED_SESSION_EXIT_CODE);
+      }
+      signal?.addEventListener("abort", onAbort, { once: true });
+      client.on("close", () => finish(TERMINATED_SESSION_EXIT_CODE));
+      client.exec(program, { pty: io.pty ?? false }, (err, stream) => {
         if (err) {
-          log("guest_exec_failed", { fqdn, error: err.message });
-          resolve(1);
+          log("guest_exec_failed", { target, error: err.message });
+          finish(1);
           return;
         }
+        log("guest_session_started", { target });
         io.onData((chunk) => stream.write(Buffer.from(chunk)));
         io.onClose(() => stream.end());
         stream.on("data", (chunk: Uint8Array) => void io.write(chunk));
         stream.stderr.on("data", (chunk: Uint8Array) => void io.writeErr(chunk));
         stream.on("close", (code: number | undefined) => {
-          log("guest_session_exit", { fqdn, code: code ?? 0 });
-          resolve(code ?? 0);
+          log("guest_session_exit", { target, code: code ?? 0 });
+          finish(code ?? 0);
         });
       });
     });
   } catch (err) {
-    log("guest_session_failed", { fqdn, error: String(err) });
+    if (signal?.aborted) {
+      log("guest_session_terminated", { target, phase: "connect" });
+      return TERMINATED_SESSION_EXIT_CODE;
+    }
+    log("guest_session_failed", { target, error: String(err) });
     await io.writeErr(new TextEncoder().encode(`guest session failed: ${String(err)}\n`));
     return 1;
   } finally {
-    try {
-      client?.end();
-    } catch { /* already gone */ }
+    endConnection(conn);
   }
 }
 
-/**
- * Is the guest's sshd reachable yet? The shipped poll spawns `ssh true` every
- * five seconds; this is a connect and a one-shot command.
- */
 export async function pollGuestReady(
   privateKeyPath: string,
-  fqdn: string,
+  target: string,
   timeoutMs: number,
-  log: (event: string, data?: Record<string, unknown>) => void,
+  dumbpipePath: string,
+  log: GatewayLog,
+  signal?: AbortSignal,
 ): Promise<boolean> {
+  if (!dumbpipeConnectArgv(target)) {
+    log("guest_ssh_refused", { target, error: new NonIrohGuestAddressError(target).message });
+    return false;
+  }
   const privateKey = await Deno.readTextFile(privateKeyPath).catch(() => "");
   if (!privateKey) return false;
   const deadline = Date.now() + timeoutMs;
   let attempt = 0;
-  while (Date.now() < deadline) {
+  while (Date.now() < deadline && !signal?.aborted) {
     attempt += 1;
-    let client: Client | null = null;
+    let conn: { client: Client; dial: IrohDial } | null = null;
     try {
-      client = await connect(fqdn, privateKey, 10_000);
+      conn = await connect(target, dumbpipePath, privateKey, 10_000, log, signal);
+      const client = conn.client;
       const ok = await new Promise<boolean>((resolve) => {
-        client!.exec("true", (err, stream) => {
+        const onAbort = () => resolve(false);
+        signal?.addEventListener("abort", onAbort, { once: true });
+        client.exec("true", (err, stream) => {
           if (err) return resolve(false);
-          stream.on("close", (code: number | undefined) => resolve(code === 0));
+          stream.on("close", (code: number | undefined) => {
+            signal?.removeEventListener("abort", onAbort);
+            resolve(code === 0);
+          });
           stream.resume();
         });
       });
       if (ok) {
-        log("guest_ssh_ready", { fqdn, attempt });
+        log("guest_ssh_ready", { target, attempt });
         return true;
       }
     } catch (err) {
-      log("guest_ssh_poll", { fqdn, attempt, error: String(err) });
+      log("guest_ssh_poll", { target, attempt, error: String(err) });
     } finally {
-      try {
-        client?.end();
-      } catch { /* already gone */ }
+      endConnection(conn);
     }
-    await new Promise((r) => setTimeout(r, 5_000));
+    await sleep(POLL_INTERVAL_MS, signal);
   }
-  log("guest_ssh_timeout", { fqdn, timeoutMs });
+  if (signal?.aborted) {
+    log("guest_ssh_poll_terminated", { target, attempt });
+    return false;
+  }
+  log("guest_ssh_timeout", { target, timeoutMs });
   return false;
+}
+
+export interface IrohSessionProviderOptions {
+  io: CommandIo;
+  log: GatewayLog;
+  dumbpipePath: string;
+  generateKeypair?: SshSessionProvider["generateKeypair"];
+}
+
+export function createIrohSessionProvider(opts: IrohSessionProviderOptions): SshSessionProvider {
+  return {
+    generateKeypair: (vmName) => {
+      if (!opts.generateKeypair) throw new Error("no keypair generator configured");
+      return opts.generateKeypair(vmName);
+    },
+    pollReady: (privateKeyPath, target, timeoutMs, signal) =>
+      pollGuestReady(privateKeyPath, target, timeoutMs, opts.dumbpipePath, opts.log, signal),
+    runSession: (privateKeyPath, target, program, signal) =>
+      runGuestSession(privateKeyPath, target, program, opts.io, opts.dumbpipePath, opts.log, signal),
+  };
 }
