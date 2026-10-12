@@ -1,3 +1,12 @@
+> **Frozen 2026-10-12.** The TypeScript of this repository that socialweb-computer uses now lives in
+> the socialweb-computer-kcp monorepo (https://github.com/publicdomainrelay/kcp-vm), under
+> `ts/socialweb-computer-ssh/`, with its git history. That copy is the source of truth. Do not change these
+> paths here, and do not sync changes back:
+>
+> `hono-socialweb-computer-ssh/`, `lib/`, `web/`, `scripts/generate-web-scope.ts`, `test/`. The eight packages it shared with socialweb-computer-k8s have one copy in socialweb-computer-k8s/lib/.
+>
+> Make every change to them in socialweb-computer-kcp. Read its AGENTS.md first.
+
 # socialweb-computer-ssh
 
 SSH front door for the social web computer. Connect with an SSH key that has
