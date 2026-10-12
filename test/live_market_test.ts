@@ -5,7 +5,7 @@
 //   badgeBlueKeys requester_associate record on an ephemeral PDS)
 //     -> OAuth session leased into a temp dir
 //     -> request-vm-ssh (RFP -> bid -> accept -> cloud-init)
-//     -> guest container's sshd, over the relay tunnel
+//     -> guest container's sshd, over the guest's own iroh endpoint
 //
 // Infrastructure is the same shape as atproto-market's own end-to-end tests:
 // fake PLC + dispatcher relay + ephemeral atproto-relay + an ephemeral
@@ -43,6 +43,7 @@ import { installFetchInterceptor } from "../../atproto-market/test/fetch-interce
 
 const ORG = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
 const VOUCH_NSID = "sh.tangled.graph.vouch";
+const TUNNEL_NSID = "com.fedproxy.temp.xrpc.tunnel";
 const log = createLogger({ serviceName: "swc-live" });
 // The bidder is a separate process, so it needs the same preload the test does.
 const UNDICI_SHIM = new URL("./fixtures/undici-shim.ts", import.meta.url).pathname;
@@ -218,10 +219,16 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
   });
 
   const dispatcherApp = createDispatcherFactory({ hostname: "relay.localhost", additionalHosts: [gateway] }).createApp();
+  const tunnelHits: string[] = [];
+  const dispatcherFetch = (req: Request) => {
+    const url = new URL(req.url);
+    if (url.pathname.includes(TUNNEL_NSID)) tunnelHits.push(`${req.headers.get("host") ?? url.host}${url.pathname}`);
+    return dispatcherApp.fetch(req);
+  };
   const dispAc = new AbortController();
-  const dispPort = await serveOnPort0(dispatcherApp.fetch, dispAc, "0.0.0.0");
+  const dispPort = await serveOnPort0(dispatcherFetch, dispAc, "0.0.0.0");
   const dispTlsAc = new AbortController();
-  const dispTlsPort = await serveOnPort0(dispatcherApp.fetch, dispTlsAc, "0.0.0.0", serverCertPem, serverKeyPem);
+  const dispTlsPort = await serveOnPort0(dispatcherFetch, dispTlsAc, "0.0.0.0", serverCertPem, serverKeyPem);
   cleanups.push(() => { dispAc.abort(); dispTlsAc.abort(); });
   const ingressProxyHost = `relay.localhost:${dispPort}`;
 
@@ -380,6 +387,7 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
     // the winning bid's workload-identity config and the guest's token exchange,
     // so nothing short of a real bidder can stand in for it.
     const CAPABILITY_SENTINEL = "cocore-sentinel-6f2a";
+    const requesterEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
     const ssh = createSshServer({
       config: { port: 0, hostname: "127.0.0.1", hostKeyPath: `${stateDir}/host_key` },
       authorizer: createAtprotoKeyAuthorizer({ plcDirectoryUrl }),
@@ -398,7 +406,10 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
               logger: log,
             }),
           ]),
-        log: (event, data) => log.info(event, data ?? {}),
+        log: (event, data) => {
+          requesterEvents.push({ event, data: data ?? {} });
+          log.info(event, data ?? {});
+        },
       }),
       defaultCommand: "bash",
       log: (event, data) => log.info(event, data ?? {}),
@@ -442,7 +453,17 @@ Deno.test("[live] ssh into a market VM provisioned through the RFP flow", async 
       result.stdout.includes(CAPABILITY_SENTINEL),
       `the capability's secret must land in the guest at ${COCORE_CONFIG_PATH_VM}.${tail}`,
     );
-    assert(guestContainers.size > 0, "the test must have observed the guest container");    assert(vmDestroyed || guestContainers.size > 0, "requester must submit vm.delete");
+    assert(guestContainers.size > 0, "the test must have observed the guest container");
+    const waiting = requesterEvents.find((e) => e.event === "vm_ssh_waiting");
+    const guestAddress = String(waiting?.data.vmFqdn ?? "");
+    assert(guestAddress.startsWith("iroh://"), `the guest must be addressed by its iroh ticket, got ${guestAddress}`);
+    assert(
+      String(waiting?.data.sshProxyCommand ?? "").includes("dumbpipe connect "),
+      `the gateway must reach the guest through dumbpipe, got ${waiting?.data.sshProxyCommand}`,
+    );
+    assert(requesterEvents.some((e) => e.event === "guest_ssh_ready"), "the gateway's own iroh dial must find the guest ready");
+    assert(requesterEvents.some((e) => e.event === "guest_session_started"), "the session must run over the gateway's iroh dial");
+    assert(tunnelHits.length === 0, `no websocket tunnel may be used, saw: ${tunnelHits.join(", ")}`);    assert(vmDestroyed || guestContainers.size > 0, "requester must submit vm.delete");
 
     // Teardown is the last leg: the requester submits a signed vm.delete and the
     // bidder destroys the guest. Poll the runtime itself -- a log line saying so
