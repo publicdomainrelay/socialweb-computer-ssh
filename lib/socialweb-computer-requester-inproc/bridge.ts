@@ -3,7 +3,7 @@ import { Buffer } from "node:buffer";
 import { Duplex } from "node:stream";
 import { Client } from "ssh2";
 import { dumbpipeConnectArgv } from "@publicdomainrelay/requester-xrpc";
-import type { SshSessionProvider } from "@publicdomainrelay/requester-abc";
+import type { GuestHostKeys, SshSessionProvider } from "@publicdomainrelay/requester-abc";
 import type { CommandIo } from "@publicdomainrelay/socialweb-computer-abc";
 
 export type GatewayLog = (event: string, data?: Record<string, unknown>) => void;
@@ -16,6 +16,22 @@ export class NonIrohGuestAddressError extends Error {
   constructor(readonly target: string) {
     super(`guest address is not an iroh ticket (iroh://...): ${target}`);
   }
+}
+
+export class GuestHostKeyMismatchError extends Error {
+  constructor(readonly alias: string) {
+    super(`the guest's ssh host key is not the one it reported (${alias}); refusing to authenticate`);
+  }
+}
+
+export class MissingGuestHostKeysError extends Error {
+  constructor(readonly target: string) {
+    super(`no reported ssh host key for ${target}; refusing to connect without one`);
+  }
+}
+
+function reportedKeySet(hostKeys: GuestHostKeys): Set<string> {
+  return new Set(hostKeys.keys.map((k) => k.publicKey));
 }
 
 interface IrohDial {
@@ -76,8 +92,11 @@ async function connect(
   privateKey: string,
   timeoutMs: number,
   log: GatewayLog,
+  hostKeys: GuestHostKeys,
   signal?: AbortSignal,
 ): Promise<{ client: Client; dial: IrohDial }> {
+  const accepted = reportedKeySet(hostKeys);
+  let mismatch = false;
   const dial = dialIroh(target, dumbpipePath, log);
   const client = new Client();
   try {
@@ -97,13 +116,18 @@ async function connect(
         })
         .on("error", (err: Error) => {
           settle();
-          reject(err);
+          reject(mismatch ? new GuestHostKeyMismatchError(hostKeys.alias) : err);
         })
         .connect({
           sock: dial.sock,
           username: "root",
           privateKey,
-          hostVerifier: () => true,
+          hostVerifier: (key: Buffer) => {
+            if (accepted.has(Buffer.from(key).toString("base64"))) return true;
+            mismatch = true;
+            log("guest_host_key_mismatch", { target, alias: hostKeys.alias });
+            return false;
+          },
         });
     });
   } catch (err) {
@@ -149,9 +173,16 @@ export async function runGuestSession(
   dumbpipePath: string,
   log: GatewayLog,
   signal?: AbortSignal,
+  hostKeys?: GuestHostKeys,
 ): Promise<number> {
   if (!dumbpipeConnectArgv(target)) {
     const err = new NonIrohGuestAddressError(target);
+    log("guest_session_refused", { target, error: err.message });
+    await io.writeErr(new TextEncoder().encode(`guest session failed: ${err.message}\n`));
+    return 1;
+  }
+  if (!hostKeys || hostKeys.keys.length === 0) {
+    const err = new MissingGuestHostKeysError(target);
     log("guest_session_refused", { target, error: err.message });
     await io.writeErr(new TextEncoder().encode(`guest session failed: ${err.message}\n`));
     return 1;
@@ -163,7 +194,7 @@ export async function runGuestSession(
   const privateKey = await Deno.readTextFile(privateKeyPath);
   let conn: { client: Client; dial: IrohDial } | null = null;
   try {
-    conn = await connect(target, dumbpipePath, privateKey, 30_000, log, signal);
+    conn = await connect(target, dumbpipePath, privateKey, 30_000, log, hostKeys, signal);
     const client = conn.client;
     return await new Promise<number>((resolve) => {
       let settled = false;
@@ -216,9 +247,14 @@ export async function pollGuestReady(
   dumbpipePath: string,
   log: GatewayLog,
   signal?: AbortSignal,
+  hostKeys?: GuestHostKeys,
 ): Promise<boolean> {
   if (!dumbpipeConnectArgv(target)) {
     log("guest_ssh_refused", { target, error: new NonIrohGuestAddressError(target).message });
+    return false;
+  }
+  if (!hostKeys || hostKeys.keys.length === 0) {
+    log("guest_ssh_refused", { target, error: new MissingGuestHostKeysError(target).message });
     return false;
   }
   const privateKey = await Deno.readTextFile(privateKeyPath).catch(() => "");
@@ -229,7 +265,7 @@ export async function pollGuestReady(
     attempt += 1;
     let conn: { client: Client; dial: IrohDial } | null = null;
     try {
-      conn = await connect(target, dumbpipePath, privateKey, 10_000, log, signal);
+      conn = await connect(target, dumbpipePath, privateKey, 10_000, log, hostKeys, signal);
       const client = conn.client;
       const ok = await new Promise<boolean>((resolve) => {
         const onAbort = () => resolve(false);
@@ -249,6 +285,7 @@ export async function pollGuestReady(
       }
     } catch (err) {
       log("guest_ssh_poll", { target, attempt, error: String(err) });
+      if (err instanceof GuestHostKeyMismatchError) return false;
     } finally {
       endConnection(conn);
     }
@@ -275,9 +312,9 @@ export function createIrohSessionProvider(opts: IrohSessionProviderOptions): Ssh
       if (!opts.generateKeypair) throw new Error("no keypair generator configured");
       return opts.generateKeypair(vmName);
     },
-    pollReady: (privateKeyPath, target, timeoutMs, signal) =>
-      pollGuestReady(privateKeyPath, target, timeoutMs, opts.dumbpipePath, opts.log, signal),
-    runSession: (privateKeyPath, target, program, signal) =>
-      runGuestSession(privateKeyPath, target, program, opts.io, opts.dumbpipePath, opts.log, signal),
+    pollReady: (privateKeyPath, target, timeoutMs, signal, hostKeys) =>
+      pollGuestReady(privateKeyPath, target, timeoutMs, opts.dumbpipePath, opts.log, signal, hostKeys),
+    runSession: (privateKeyPath, target, program, signal, hostKeys) =>
+      runGuestSession(privateKeyPath, target, program, opts.io, opts.dumbpipePath, opts.log, signal, hostKeys),
   };
 }

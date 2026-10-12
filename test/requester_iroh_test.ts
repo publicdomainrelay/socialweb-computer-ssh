@@ -3,6 +3,7 @@ import { assert, assertEquals } from "@std/assert";
 import { Server, utils } from "ssh2";
 import type { AddressInfo } from "node:net";
 import type { CommandIo } from "@publicdomainrelay/socialweb-computer-abc";
+import type { GuestHostKeys } from "@publicdomainrelay/requester-abc";
 import {
   contractUserData,
   createIrohSessionProvider,
@@ -12,6 +13,11 @@ import {
 const TICKET = "nodeabc4ticketxyz7";
 const IROH_TARGET = `iroh://${TICKET}`;
 const ROOT = new URL("../", import.meta.url).pathname;
+
+function hostKeysOf(publicKey: string): GuestHostKeys {
+  const [type, blob] = publicKey.trim().split(/\s+/);
+  return { alias: "swc-guest-did-plc-bidder-3lreceipt", keys: [{ type, publicKey: blob }] };
+}
 
 function generateSshKey(): { private: string; public: string } {
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -23,6 +29,8 @@ function generateSshKey(): { private: string; public: string } {
 
 interface FakeGuest {
   port: number;
+  hostKeys: GuestHostKeys;
+  authAttempts: () => number;
   closedConnections: () => number;
   close: () => Promise<void>;
 }
@@ -30,8 +38,12 @@ interface FakeGuest {
 function startFakeGuestSshd(): Promise<FakeGuest> {
   const hostKey = generateSshKey();
   let closed = 0;
+  let auths = 0;
   const server = new Server({ hostKeys: [hostKey.private] }, (client) => {
-    client.on("authentication", (ctx) => ctx.method === "publickey" ? ctx.accept() : ctx.reject(["publickey"]));
+    client.on("authentication", (ctx) => {
+      auths += 1;
+      return ctx.method === "publickey" ? ctx.accept() : ctx.reject(["publickey"]);
+    });
     client.on("ready", () => {
       client.on("session", (acceptSession) => {
         const session = acceptSession();
@@ -54,6 +66,8 @@ function startFakeGuestSshd(): Promise<FakeGuest> {
     server.listen(0, "127.0.0.1", () => {
       resolve({
         port: (server.address() as AddressInfo).port,
+        hostKeys: hostKeysOf(hostKey.public),
+        authAttempts: () => auths,
         closedConnections: () => closed,
         close: () => new Promise<void>((r) => server.close(() => r())),
       });
@@ -181,14 +195,46 @@ Deno.test("the session provider dials through dumbpipe connect with the guest's 
   try {
     const cap = captureIo();
     const provider = createIrohSessionProvider({ io: cap.io, log: t.log, dumbpipePath: t.dumbpipe.path });
-    assert(await provider.pollReady(t.keyPath, IROH_TARGET, 30_000), "guest should answer over the iroh dial");
-    const code = await provider.runSession(t.keyPath, IROH_TARGET, "echo hello");
+    assert(await provider.pollReady(t.keyPath, IROH_TARGET, 30_000, undefined, t.guest.hostKeys), "guest should answer over the iroh dial");
+    const code = await provider.runSession(t.keyPath, IROH_TARGET, "echo hello", undefined, t.guest.hostKeys);
     assertEquals(code, 0);
     assert(cap.out().includes("ran:echo hello"), cap.out());
     const calls = await t.dumbpipe.calls();
     assert(calls.length >= 2, `dumbpipe dialed ${calls.length} times`);
     for (const argv of calls) assertEquals(argv, ["connect", TICKET]);
     assertEquals(t.ws.dialed, []);
+  } finally {
+    await t.cleanup();
+  }
+});
+
+Deno.test("the gateway verifies the guest against its reported host key: a mismatch is refused before authentication", async () => {
+  const t = await setup();
+  try {
+    const cap = captureIo();
+    const provider = createIrohSessionProvider({ io: cap.io, log: t.log, dumbpipePath: t.dumbpipe.path });
+    const other = hostKeysOf(generateSshKey().public);
+    const started = Date.now();
+    assertEquals(await provider.pollReady(t.keyPath, IROH_TARGET, 30_000, undefined, other), false);
+    assert(Date.now() - started < 10_000, "a host key mismatch is not retried until the timeout");
+    assert(t.events.some((e) => e.event === "guest_host_key_mismatch"), JSON.stringify(t.events));
+    assertEquals(await provider.runSession(t.keyPath, IROH_TARGET, "echo hi", undefined, other), 1);
+    assert(!cap.out().includes("ran:"), "nothing ran on a guest whose host key did not match");
+    assertEquals(t.guest.authAttempts(), 0, "a mismatched host key never reaches authentication");
+  } finally {
+    await t.cleanup();
+  }
+});
+
+Deno.test("without the guest's reported host keys the gateway dials nothing", async () => {
+  const t = await setup();
+  try {
+    const cap = captureIo();
+    const provider = createIrohSessionProvider({ io: cap.io, log: t.log, dumbpipePath: t.dumbpipe.path });
+    assertEquals(await provider.pollReady(t.keyPath, IROH_TARGET, 30_000), false);
+    assertEquals(await provider.runSession(t.keyPath, IROH_TARGET, "echo hi"), 1);
+    assert(cap.err().includes("host key"), cap.err());
+    assertEquals(await t.dumbpipe.calls(), []);
   } finally {
     await t.cleanup();
   }
@@ -217,7 +263,7 @@ Deno.test("vm.terminated ends a running guest session and closes the iroh dial",
     const cap = captureIo();
     const provider = createIrohSessionProvider({ io: cap.io, log: t.log, dumbpipePath: t.dumbpipe.path });
     const ended = new AbortController();
-    const session = provider.runSession(t.keyPath, IROH_TARGET, "hang", ended.signal);
+    const session = provider.runSession(t.keyPath, IROH_TARGET, "hang", ended.signal, t.guest.hostKeys);
     const startDeadline = Date.now() + 20_000;
     while (!t.events.some((e) => e.event === "guest_session_started") && Date.now() < startDeadline) {
       await new Promise((r) => setTimeout(r, 50));
@@ -248,7 +294,7 @@ Deno.test("vm.terminated stops the readiness poll", async () => {
     const ended = new AbortController();
     setTimeout(() => ended.abort(), 300);
     const started = Date.now();
-    assertEquals(await provider.pollReady(t.keyPath, IROH_TARGET, 60_000, ended.signal), false);
+    assertEquals(await provider.pollReady(t.keyPath, IROH_TARGET, 60_000, ended.signal, t.guest.hostKeys), false);
     assert(Date.now() - started < 4_000, `poll took ${Date.now() - started}ms after vm.terminated`);
   } finally {
     await t.cleanup();
