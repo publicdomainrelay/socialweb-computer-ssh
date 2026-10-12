@@ -265,6 +265,7 @@ export function createInProcessRequester(opts: InProcessRequesterOptions): InPro
           sshProvider: providerFor(io),
           policy: { name: policy, args: policyArgs },
           guestHostAliases: opts.guestHostAliases,
+          userData: { transport: "tunnel" },
           rbac: opts.rbac ?? false,
           capabilities,
           logger,
