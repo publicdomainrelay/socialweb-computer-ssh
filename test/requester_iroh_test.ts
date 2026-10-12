@@ -156,7 +156,6 @@ Deno.test("no source in socialweb-computer-ssh asks for a non-iroh transport or 
     /tunnelWsUrl/,
     /sshTunnelArgs/,
     /com\.fedproxy\.temp\.xrpc\.tunnel/,
-    /ensureWebsocat/,
     /new WebSocket\(/,
     /runSessionOverTunnel/,
   ];

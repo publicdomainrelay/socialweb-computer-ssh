@@ -25,7 +25,7 @@ export {
 } from "./bridge.ts";
 export type { GatewayLog, IrohSessionProviderOptions } from "./bridge.ts";
 
-export function contractUserData(): { transport: string } {
+export function contractUserData(): { transport: typeof DEFAULT_TRANSPORT_MODULE } {
   return { transport: DEFAULT_TRANSPORT_MODULE };
 }
 

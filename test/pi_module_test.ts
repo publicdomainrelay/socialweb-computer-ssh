@@ -96,7 +96,7 @@ Deno.test("it composes into cloud-init by value, with no registry entry", () => 
   // The point of the module being a value: cloud-init-common has no idea what pi
   // is, and nothing had to be registered for this to work.
   const yaml = buildUserData({
-    ctx: { vmName: "vm", ingressProxyHost: "relay.test", audHost: "relay.test" },
+    ctx: { vmName: "vm" },
     modules: [createPiCocoreModule()],
   });
   assert(yaml.includes("/usr/local/bin/setup-pi.sh"));
